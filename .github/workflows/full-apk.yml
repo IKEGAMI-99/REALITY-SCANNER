@@ -92,25 +92,25 @@ jobs:
 
       - name: Rename APK
         run: |
-          cp app/build/outputs/apk/debug/app-debug.apk REALITY-SCANNER-v0.1.7-YOUTUBE-DEMO.apk
-          test -s REALITY-SCANNER-v0.1.7-YOUTUBE-DEMO.apk
-          ls -lh REALITY-SCANNER-v0.1.7-YOUTUBE-DEMO.apk
+          cp app/build/outputs/apk/debug/app-debug.apk REALITY-SCANNER-v0.1.8-DEMO-FIX.apk
+          test -s REALITY-SCANNER-v0.1.8-DEMO-FIX.apk
+          ls -lh REALITY-SCANNER-v0.1.8-DEMO-FIX.apk
 
       - uses: actions/upload-artifact@v4
         with:
-          name: reality-scanner-v0.1.7
-          path: REALITY-SCANNER-v0.1.7-YOUTUBE-DEMO.apk
+          name: reality-scanner-v0.1.8
+          path: REALITY-SCANNER-v0.1.8-DEMO-FIX.apk
           retention-days: 30
 
       - name: Publish GitHub Release APK
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
-          NOTES="Adds YouTube demo mode. Paste a YouTube URL or video ID from the new DEMO control to replace the live camera with an embedded YouTube player. The 16:9 player is center-cropped to cover the square HUD area instead of appearing as a small landscape frame. Camera binding pauses while demo mode is active and resumes without destroying the loaded detector."
-          if gh release view v0.1.7 >/dev/null 2>&1; then
-            gh release upload v0.1.7 REALITY-SCANNER-v0.1.7-YOUTUBE-DEMO.apk --clobber
+          NOTES="Fixes YouTube demo playback by using an explicit HTTPS app origin, YouTube IFrame API event bridge, referrer policy, and player error reporting including codes 101/150/153. Reduces bbox drift by adding a velocity dead-zone and shortening visual extrapolation from 0.60s to 0.18s, with stationary boxes held fixed."
+          if gh release view v0.1.8 >/dev/null 2>&1; then
+            gh release upload v0.1.8 REALITY-SCANNER-v0.1.8-DEMO-FIX.apk --clobber
           else
-            gh release create v0.1.7 REALITY-SCANNER-v0.1.7-YOUTUBE-DEMO.apk \
-              --title "REALITY SCANNER v0.1.7" \
+            gh release create v0.1.8 REALITY-SCANNER-v0.1.8-DEMO-FIX.apk \
+              --title "REALITY SCANNER v0.1.8" \
               --notes "$NOTES"
           fi
