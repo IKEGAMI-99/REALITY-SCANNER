@@ -16,6 +16,7 @@ import com.ikegami99.realityscanner.tracking.TrackManager
 import com.ikegami99.realityscanner.ui.HudOverlayView
 import java.util.concurrent.ExecutorService
 import java.util.concurrent.Executors
+import java.util.concurrent.atomic.AtomicBoolean
 import kotlin.math.min
 
 class CameraController(
@@ -26,18 +27,23 @@ class CameraController(
     private val hud: HudOverlayView,
     private val logger: AppLogger
 ) {
+    // Camera analysis must never wait for YOLO. The analyzer stays light and continuously drops
+    // frames into the live preview/HUD path while a second worker owns the expensive inference.
     private val analysisExecutor: ExecutorService = Executors.newSingleThreadExecutor()
+    private val inferenceExecutor: ExecutorService = Executors.newSingleThreadExecutor()
+    private val inferenceRunning = AtomicBoolean(false)
+
     private var cameraProvider: ProcessCameraProvider? = null
     private var camera: Camera? = null
 
     private var frameCounter = 0
     private var fpsWindowStart = System.nanoTime()
-    private var cameraFps = 0f
+    @Volatile private var cameraFps = 0f
 
-    private var lastInferenceNanos = 0L
-    private var lastInferenceMs = 0f
-    private var aiFps = 0f
-    private var lastLowLight = false
+    @Volatile private var lastInferenceNanos = 0L
+    @Volatile private var lastInferenceMs = 0f
+    @Volatile private var aiFps = 0f
+    @Volatile private var lastLowLight = false
     private var inferenceCount = 0
     private var aiWindowStart = System.nanoTime()
 
@@ -67,7 +73,10 @@ class CameraController(
                     analysis
                 )
 
-                logger.info("CAMERA", "preview started // analyzer=1280x720 // display=square crop")
+                logger.info(
+                    "CAMERA",
+                    "preview started // analyzer=1280x720 // async inference enabled // display=square crop"
+                )
             } catch (t: Throwable) {
                 logger.error("CAMERA", "start failed: ${t.javaClass.simpleName}: ${t.message}")
             }
@@ -90,51 +99,74 @@ class CameraController(
             applyExposureAssist(lowLight)
         }
 
+        // Keep the status panel alive at camera cadence even if YOLO is taking several seconds.
+        publishHud()
+
         val inferDue = now - lastInferenceNanos >= INFERENCE_INTERVAL_NANOS
-        if (!inferDue) {
-            publishHud()
+        if (!inferDue || !inferenceRunning.compareAndSet(false, true)) {
             image.close()
             return
         }
 
         lastInferenceNanos = now
-        val started = System.nanoTime()
+        val sourceFrameNanos = now
+        val rotationDegrees = image.imageInfo.rotationDegrees
+        val lowLightGain = if (lowLight) 1.45f else 1f
 
-        try {
-            val bitmap = image.toBitmap()
-            val detections = detector.detect(
-                bitmap = bitmap,
-                rotationDegrees = image.imageInfo.rotationDegrees,
-                lowLightGain = if (lowLight) 1.45f else 1f
-            )
-            bitmap.recycle()
-
-            val tracks = trackManager.update(detections, now)
-            lastInferenceMs = (System.nanoTime() - started) / 1_000_000f
-            updateAiFps(System.nanoTime())
-
-            if (detections.isNotEmpty()) {
-                logger.info(
-                    "YOLO",
-                    "objects=${detections.size} tracks=${tracks.size} infer=${"%.1f".format(lastInferenceMs)}ms"
-                )
-                tracks.take(4).forEach {
-                    logger.info(
-                        "VECTOR",
-                        "#${it.id} ${it.label} rel=${"%.3f".format(it.relativeSpeed)}/s " +
-                            "vx=${"%.3f".format(it.velocityX)} vy=${"%.3f".format(it.velocityY)}"
-                    )
-                }
-            }
-
-            previewView.post {
-                hud.setTracks(tracks)
-                publishHud()
-            }
+        // Copy only the occasional inference frame. Release ImageProxy immediately afterward so
+        // CameraX can continue delivering ~30 analysis frames/s while YOLO works in parallel.
+        val bitmap = try {
+            image.toBitmap()
         } catch (t: Throwable) {
-            logger.error("ANALYSIS", "${t.javaClass.simpleName}: ${t.message}")
-        } finally {
+            inferenceRunning.set(false)
+            logger.error("ANALYSIS", "frame copy failed: ${t.javaClass.simpleName}: ${t.message}")
             image.close()
+            return
+        }
+        image.close()
+
+        inferenceExecutor.execute {
+            val started = System.nanoTime()
+            try {
+                val detections = detector.detect(
+                    bitmap = bitmap,
+                    rotationDegrees = rotationDegrees,
+                    lowLightGain = lowLightGain
+                )
+
+                val completed = System.nanoTime()
+                // Important: detections belong to the source frame, not the completion time.
+                // Keeping this timestamp lets the HUD extrapolate the boxes forward while the
+                // neural net was busy instead of snapping several seconds into the past.
+                val tracks = trackManager.update(detections, sourceFrameNanos)
+                lastInferenceMs = (completed - started) / 1_000_000f
+                updateAiFps(completed)
+
+                if (detections.isNotEmpty()) {
+                    logger.info(
+                        "YOLO",
+                        "objects=${detections.size} tracks=${tracks.size} " +
+                            "infer=${"%.1f".format(lastInferenceMs)}ms backend=${detector.backendName}"
+                    )
+                    tracks.take(4).forEach {
+                        logger.info(
+                            "VECTOR",
+                            "#${it.id} ${it.label} rel=${"%.3f".format(it.relativeSpeed)}/s " +
+                                "vx=${"%.3f".format(it.velocityX)} vy=${"%.3f".format(it.velocityY)}"
+                        )
+                    }
+                }
+
+                previewView.post {
+                    hud.setTracks(tracks)
+                    publishHud()
+                }
+            } catch (t: Throwable) {
+                logger.error("ANALYSIS", "${t.javaClass.simpleName}: ${t.message}")
+            } finally {
+                bitmap.recycle()
+                inferenceRunning.set(false)
+            }
         }
     }
 
@@ -148,6 +180,7 @@ class CameraController(
         }
     }
 
+    @Synchronized
     private fun updateAiFps(now: Long) {
         inferenceCount++
         val elapsed = now - aiWindowStart
@@ -206,6 +239,7 @@ class CameraController(
     fun stop() {
         cameraProvider?.unbindAll()
         analysisExecutor.shutdownNow()
+        inferenceExecutor.shutdownNow()
         detector.close()
     }
 
