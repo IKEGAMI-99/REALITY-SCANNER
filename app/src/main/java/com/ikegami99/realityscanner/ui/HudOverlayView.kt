@@ -103,7 +103,11 @@ class HudOverlayView @JvmOverloads constructor(
     }
 
     private fun drawTrack(canvas: Canvas, track: TrackSnapshot, now: Long) {
-        val dt = ((now - track.lastSeenNanos) / 1_000_000_000f).coerceIn(0f, 0.25f)
+        // YOLO26x may update only a few times per second (or slower on CPU). Extrapolate the most
+        // recent authoritative box at display refresh rate using the track velocity instead of
+        // freezing after 250 ms. The next YOLO result re-anchors this prediction.
+        val ageSeconds = ((now - track.lastSeenNanos) / 1_000_000_000f).coerceAtLeast(0f)
+        val dt = ageSeconds.coerceAtMost(MAX_EXTRAPOLATION_SECONDS)
         val dx = track.velocityX * dt
         val dy = track.velocityY * dt
 
@@ -114,12 +118,17 @@ class HudOverlayView @JvmOverloads constructor(
             (track.box.bottom + dy) * height
         )
 
-        linePaint.color = green
+        linePaint.color = if (ageSeconds > 1.0f) dimGreen else green
         linePaint.strokeWidth = 2f
         drawCorners(canvas, rect)
 
         val label = "${track.label.uppercase()} #${track.id.toString().padStart(4, '0')}"
-        val metrics = "CONF %.1f%%  REL %.3f/s".format(track.score * 100f, track.relativeSpeed)
+        val predictionFlag = if (ageSeconds > 0.25f) " PRED" else ""
+        val metrics = "CONF %.1f%%  REL %.3f/s%s".format(
+            track.score * 100f,
+            track.relativeSpeed,
+            predictionFlag
+        )
 
         val labelWidth = maxOf(textPaint.measureText(label), smallPaint.measureText(metrics)) + 20f
         val labelTop = (rect.top - 61f).coerceAtLeast(0f)
@@ -131,9 +140,8 @@ class HudOverlayView @JvmOverloads constructor(
         val cy = rect.centerY()
         canvas.drawCircle(cx, cy, 4f, linePaint)
 
-        val predictionSeconds = 0.50f
-        val targetX = cx + track.velocityX * width * predictionSeconds
-        val targetY = cy + track.velocityY * height * predictionSeconds
+        val targetX = cx + track.velocityX * width * VECTOR_LOOKAHEAD_SECONDS
+        val targetY = cy + track.velocityY * height * VECTOR_LOOKAHEAD_SECONDS
 
         canvas.drawLine(cx, cy, targetX, targetY, linePaint)
         drawArrow(canvas, cx, cy, targetX, targetY)
@@ -172,5 +180,10 @@ class HudOverlayView @JvmOverloads constructor(
             (y2 + sin(a2) * size).toFloat(),
             linePaint
         )
+    }
+
+    companion object {
+        private const val MAX_EXTRAPOLATION_SECONDS = 5.0f
+        private const val VECTOR_LOOKAHEAD_SECONDS = 0.50f
     }
 }
