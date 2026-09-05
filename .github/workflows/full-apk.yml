@@ -78,7 +78,7 @@ jobs:
           cp -a qnn_s_bundle/. app/src/main/assets/models/qnn_s/
           cp -a qnn_n_bundle/. app/src/main/assets/models/qnn_n/
 
-          # Fast XNNPACK fallback if the vendor QNN stack still refuses the precompiled context.
+          # Fast fallback if the vendor QNN stack still refuses the precompiled context.
           cp yolo26n.onnx app/src/main/assets/models/yolo26n.onnx
 
           echo "QNN-S bundle:"
@@ -93,24 +93,25 @@ jobs:
 
       - name: Rename APK
         run: |
-          cp app/build/outputs/apk/debug/app-debug.apk REALITY-SCANNER-v0.1.5-QNN-EXTERNAL.apk
-          test -s REALITY-SCANNER-v0.1.5-QNN-EXTERNAL.apk
-          ls -lh REALITY-SCANNER-v0.1.5-QNN-EXTERNAL.apk
+          cp app/build/outputs/apk/debug/app-debug.apk REALITY-SCANNER-v0.1.6-QNN-HUD.apk
+          test -s REALITY-SCANNER-v0.1.6-QNN-HUD.apk
+          ls -lh REALITY-SCANNER-v0.1.6-QNN-HUD.apk
 
       - uses: actions/upload-artifact@v4
         with:
-          name: reality-scanner-qnn-external-v0.1.5
-          path: REALITY-SCANNER-v0.1.5-QNN-EXTERNAL.apk
+          name: reality-scanner-v0.1.6
+          path: REALITY-SCANNER-v0.1.6-QNN-HUD.apk
           retention-days: 30
 
       - name: Publish GitHub Release APK
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
-          if gh release view v0.1.5 >/dev/null 2>&1; then
-            gh release upload v0.1.5 REALITY-SCANNER-v0.1.5-QNN-EXTERNAL.apk --clobber
+          NOTES="Fixes the POCO F7 Ultra QNN startup failure by allowing the small CPU helper nodes required around an external QNN EPContext while keeping the compiled graph on HTP. Fixes YOLO26n NHWC/NCHW shape detection so the 640 fallback no longer creates an invalid 1x3x640x3 tensor. Replaces DocumentsUI log export with direct MediaStore Downloads/REALITY_SCANNER output and verifies the saved file by reading its bytes back before reporting success."
+          if gh release view v0.1.6 >/dev/null 2>&1; then
+            gh release upload v0.1.6 REALITY-SCANNER-v0.1.6-QNN-HUD.apk --clobber
           else
-            gh release create v0.1.5 REALITY-SCANNER-v0.1.5-QNN-EXTERNAL.apk \
-              --title "REALITY SCANNER v0.1.5" \
-              --notes "Fixes 0-byte JSON log exports with real write/size verification. Rebuilds Snapdragon QNN models using external EPContext binaries (wrapper ONNX + companion .bin) to avoid the embedded EPContext loading failure seen on the POCO F7 Ultra. Keeps YOLO26n/640 XNNPACK as the fast fallback."
+            gh release create v0.1.6 REALITY-SCANNER-v0.1.6-QNN-HUD.apk \
+              --title "REALITY SCANNER v0.1.6" \
+              --notes "$NOTES"
           fi
