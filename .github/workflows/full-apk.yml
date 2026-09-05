@@ -16,7 +16,7 @@ permissions:
 jobs:
   build-full:
     runs-on: ubuntu-latest
-    timeout-minutes: 45
+    timeout-minutes: 60
 
     steps:
       - uses: actions/checkout@v4
@@ -50,37 +50,45 @@ jobs:
         run: |
           python -m pip install ultralytics onnx onnxslim
 
-      - name: Export YOLO26x to ONNX
+      - name: Export YOLO26x compatibility model
         run: |
           python scripts/export_yolo26.py
           test -s yolo26x.onnx
           mkdir -p app/src/main/assets/models
           mv yolo26x.onnx app/src/main/assets/models/yolo26x.onnx
-          ls -lh app/src/main/assets/models/yolo26x.onnx
+
+      - name: Export Snapdragon HTP QNN live models
+        run: |
+          python scripts/export_yolo26_qnn.py
+          test -s yolo26s_v79_qnn.onnx
+          test -s yolo26n_v79_qnn.onnx
+          mv yolo26s_v79_qnn.onnx app/src/main/assets/models/yolo26s_v79_qnn.onnx
+          mv yolo26n_v79_qnn.onnx app/src/main/assets/models/yolo26n_v79_qnn.onnx
+          ls -lh app/src/main/assets/models/
 
       - name: Build full debug APK
         run: gradle :app:assembleDebug --stacktrace
 
       - name: Rename APK
         run: |
-          cp app/build/outputs/apk/debug/app-debug.apk REALITY-SCANNER-v0.1.2-FULL-YOLO26x.apk
-          test -s REALITY-SCANNER-v0.1.2-FULL-YOLO26x.apk
-          ls -lh REALITY-SCANNER-v0.1.2-FULL-YOLO26x.apk
+          cp app/build/outputs/apk/debug/app-debug.apk REALITY-SCANNER-v0.1.3-QNN-HYBRID.apk
+          test -s REALITY-SCANNER-v0.1.3-QNN-HYBRID.apk
+          ls -lh REALITY-SCANNER-v0.1.3-QNN-HYBRID.apk
 
       - uses: actions/upload-artifact@v4
         with:
-          name: reality-scanner-full-ai-v0.1.2
-          path: REALITY-SCANNER-v0.1.2-FULL-YOLO26x.apk
+          name: reality-scanner-qnn-hybrid-v0.1.3
+          path: REALITY-SCANNER-v0.1.3-QNN-HYBRID.apk
           retention-days: 30
 
       - name: Publish GitHub Release APK
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
-          if gh release view v0.1.2 >/dev/null 2>&1; then
-            gh release upload v0.1.2 REALITY-SCANNER-v0.1.2-FULL-YOLO26x.apk --clobber
+          if gh release view v0.1.3 >/dev/null 2>&1; then
+            gh release upload v0.1.3 REALITY-SCANNER-v0.1.3-QNN-HYBRID.apk --clobber
           else
-            gh release create v0.1.2 REALITY-SCANNER-v0.1.2-FULL-YOLO26x.apk \
-              --title "REALITY SCANNER v0.1.2" \
-              --notes "Smooth-tracking update: camera analysis and YOLO inference are fully asynchronous, BBoxes are extrapolated between detector refreshes, track matching uses predicted positions, and XNNPACK is used before generic CPU fallback."
+            gh release create v0.1.3 REALITY-SCANNER-v0.1.3-QNN-HYBRID.apk \
+              --title "REALITY SCANNER v0.1.3" \
+              --notes "QNN/HTP acceleration build for Snapdragon 8 Elite. Prefers YOLO26s QNN, falls back to YOLO26n QNN, then YOLO26x ONNX. Also fixes status-bar/cutout overlap."
           fi
