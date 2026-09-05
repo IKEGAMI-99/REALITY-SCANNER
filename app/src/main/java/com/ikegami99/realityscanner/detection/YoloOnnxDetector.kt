@@ -94,37 +94,60 @@ class YoloOnnxDetector(
             return
         }
 
-        try {
+        logger.info("MODEL", "loading ${model.name} // trying NNAPI first")
+
+        val nnapiSession = try {
             val options = OrtSession.SessionOptions()
-            var selectedBackend = "CPU"
-            try {
-                options.addNnapi()
-                selectedBackend = "NNAPI"
-            } catch (t: Throwable) {
-                logger.warn("NPU", "NNAPI unavailable, CPU fallback: ${t.message}")
-            }
-
-            session = environment.createSession(model.absolutePath, options)
-            inputName = session!!.inputNames.first()
-
-            val info = session!!.inputInfo[inputName]?.info as? TensorInfo
-            val shape = info?.shape
-            if (shape != null && shape.size >= 4) {
-                val h = shape[2].toInt()
-                val w = shape[3].toInt()
-                if (h > 0) inputHeight = h
-                if (w > 0) inputWidth = w
-            }
-
-            backendName = selectedBackend
-            logger.info(
-                "MODEL",
-                "loaded ${model.name} input=${inputWidth}x${inputHeight} backend=$backendName"
+            options.addNnapi()
+            environment.createSession(model.absolutePath, options)
+        } catch (t: Throwable) {
+            logger.warn(
+                "NPU",
+                "NNAPI session rejected model: ${t.javaClass.simpleName}: ${t.message}"
             )
+            null
+        }
+
+        if (nnapiSession != null) {
+            installSession(nnapiSession, "NNAPI", model)
+            return
+        }
+
+        logger.warn("NPU", "NNAPI FAILED -> CPU FALLBACK")
+        logger.info("MODEL", "rebuilding ONNX Runtime session with CPU provider")
+
+        try {
+            val cpuOptions = OrtSession.SessionOptions()
+            val cpuSession = environment.createSession(model.absolutePath, cpuOptions)
+            installSession(cpuSession, "CPU", model)
         } catch (t: Throwable) {
             backendName = "LOAD ERROR"
-            logger.error("MODEL", "load failed: ${t.javaClass.simpleName}: ${t.message}")
+            logger.error(
+                "MODEL",
+                "CPU fallback also failed: ${t.javaClass.simpleName}: ${t.message}"
+            )
         }
+    }
+
+    private fun installSession(newSession: OrtSession, backend: String, model: File) {
+        runCatching { session?.close() }
+        session = newSession
+        inputName = newSession.inputNames.first()
+
+        val info = newSession.inputInfo[inputName]?.info as? TensorInfo
+        val shape = info?.shape
+        if (shape != null && shape.size >= 4) {
+            val h = shape[2].toInt()
+            val w = shape[3].toInt()
+            if (h > 0) inputHeight = h
+            if (w > 0) inputWidth = w
+        }
+
+        backendName = backend
+        logger.info(
+            "MODEL",
+            "loaded ${model.name} input=${inputWidth}x${inputHeight} backend=$backendName"
+        )
     }
 
     private fun resolveModel(): File? {
