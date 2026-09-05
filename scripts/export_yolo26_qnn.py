@@ -1,4 +1,5 @@
 from pathlib import Path
+import importlib
 import shutil
 
 from ultralytics import YOLO
@@ -12,12 +13,20 @@ def force_external_context_mode() -> None:
     text = source.read_text(encoding="utf-8")
     embedded = 'options.add_session_config_entry("ep.context_embed_mode", "1")'
     external = 'options.add_session_config_entry("ep.context_embed_mode", "0")'
-    if external in text:
-        return
-    if embedded not in text:
-        raise RuntimeError(f"Unable to locate QNN embed-mode setting in {source}")
-    source.write_text(text.replace(embedded, external), encoding="utf-8")
-    print(f"patched {source} to ep.context_embed_mode=0")
+
+    if external not in text:
+        if embedded not in text:
+            raise RuntimeError(f"Unable to locate QNN embed-mode setting in {source}")
+        source.write_text(text.replace(embedded, external), encoding="utf-8")
+        print(f"patched {source} to ep.context_embed_mode=0")
+
+    # The module is already imported above. Reload it so model.export() receives the patched
+    # onnx2qnn function rather than the old in-memory function with embed_mode=1.
+    importlib.invalidate_caches()
+    reloaded = importlib.reload(qnn_export)
+    if 'ep.context_embed_mode", "0"' not in Path(reloaded.__file__).read_text(encoding="utf-8"):
+        raise RuntimeError("QNN exporter reload verification failed")
+    print("reloaded Ultralytics QNN exporter in external-context mode")
 
 
 def export_qnn(model_name: str, output_dir: str) -> None:
