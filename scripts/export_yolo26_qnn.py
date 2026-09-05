@@ -5,28 +5,44 @@ import shutil
 from ultralytics import YOLO
 
 
-def force_external_context_mode() -> None:
-    """Work around ORT QNN embedded EPContext loading issues by keeping the context binary external."""
+def patch_ultralytics_for_external_qnn() -> None:
+    """Enable external QNN EPContext and allow its intentionally tiny wrapper ONNX file."""
     import ultralytics.utils.export.qnn as qnn_export
+    import ultralytics.engine.exporter as exporter
 
-    source = Path(qnn_export.__file__)
-    text = source.read_text(encoding="utf-8")
+    qnn_source = Path(qnn_export.__file__)
+    qnn_text = qnn_source.read_text(encoding="utf-8")
     embedded = 'options.add_session_config_entry("ep.context_embed_mode", "1")'
     external = 'options.add_session_config_entry("ep.context_embed_mode", "0")'
+    if external not in qnn_text:
+        if embedded not in qnn_text:
+            raise RuntimeError(f"Unable to locate QNN embed-mode setting in {qnn_source}")
+        qnn_source.write_text(qnn_text.replace(embedded, external), encoding="utf-8")
+        print(f"patched {qnn_source} to ep.context_embed_mode=0")
 
-    if external not in text:
-        if embedded not in text:
-            raise RuntimeError(f"Unable to locate QNN embed-mode setting in {source}")
-        source.write_text(text.replace(embedded, external), encoding="utf-8")
-        print(f"patched {source} to ep.context_embed_mode=0")
+    # External EPContext puts the actual compiled graph in a companion .bin, leaving only a
+    # few-KB ONNX wrapper. Ultralytics' generic >0.1 MB export sanity check incorrectly rejects
+    # that valid wrapper, so lower the generic threshold for this controlled CI export. We still
+    # perform our own strict non-empty .bin validation below.
+    exporter_source = Path(exporter.__file__)
+    exporter_text = exporter_source.read_text(encoding="utf-8")
+    old_check = 'assert mb > 0.1, f"{mb:.3f} MB output model too small (likely corrupt or unsupported ops)"'
+    new_check = 'assert mb > 0.001, f"{mb:.3f} MB output model too small (likely corrupt or unsupported ops)"'
+    if new_check not in exporter_text:
+        if old_check not in exporter_text:
+            raise RuntimeError(f"Unable to locate Ultralytics export-size check in {exporter_source}")
+        exporter_source.write_text(exporter_text.replace(old_check, new_check), encoding="utf-8")
+        print(f"patched {exporter_source} minimum output size for external QNN wrapper")
 
-    # The module is already imported above. Reload it so model.export() receives the patched
-    # onnx2qnn function rather than the old in-memory function with embed_mode=1.
     importlib.invalidate_caches()
-    reloaded = importlib.reload(qnn_export)
-    if 'ep.context_embed_mode", "0"' not in Path(reloaded.__file__).read_text(encoding="utf-8"):
+    qnn_export = importlib.reload(qnn_export)
+    exporter = importlib.reload(exporter)
+
+    if 'ep.context_embed_mode", "0"' not in Path(qnn_export.__file__).read_text(encoding="utf-8"):
         raise RuntimeError("QNN exporter reload verification failed")
-    print("reloaded Ultralytics QNN exporter in external-context mode")
+    if "mb > 0.001" not in Path(exporter.__file__).read_text(encoding="utf-8"):
+        raise RuntimeError("Ultralytics exporter size-check reload verification failed")
+    print("reloaded Ultralytics exporter in external-QNN mode")
 
 
 def export_qnn(model_name: str, output_dir: str) -> None:
@@ -59,20 +75,31 @@ def export_qnn(model_name: str, output_dir: str) -> None:
     if not new_bins:
         raise RuntimeError(
             f"QNN export for {model_name} produced no external .bin file; "
-            "embedded context mode may still be active"
+            "external EPContext generation failed"
         )
 
+    copied_total = 0
     for bin_path in new_bins:
+        if bin_path.stat().st_size <= 0:
+            continue
         target = target_dir / bin_path.name
         shutil.copy2(bin_path, target)
+        copied_total += target.stat().st_size
         print(f"copied context binary {bin_path} -> {target}")
 
+    if copied_total < 1024 * 1024:
+        raise RuntimeError(
+            f"External QNN context binaries for {model_name} total only {copied_total} bytes; "
+            "expected a compiled graph substantially larger than 1 MB"
+        )
+
     print(f"exported {model_name} -> {context_onnx} ({context_onnx.stat().st_size} bytes)")
+    print(f"external QNN context total: {copied_total} bytes")
     print("bundle contents:")
     for path in sorted(target_dir.iterdir()):
         print(f"  {path.name}: {path.stat().st_size} bytes")
 
 
-force_external_context_mode()
+patch_ultralytics_for_external_qnn()
 export_qnn("yolo26s.pt", "qnn_s_bundle")
 export_qnn("yolo26n.pt", "qnn_n_bundle")
