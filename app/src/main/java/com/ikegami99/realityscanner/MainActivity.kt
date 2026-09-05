@@ -29,7 +29,7 @@ import java.util.Locale
 
 class MainActivity : ComponentActivity() {
     private val green = Color.rgb(112, 255, 112)
-    private val background = Color.rgb(2, 6, 2)
+    private val bgColor = Color.rgb(2, 6, 2)
 
     private lateinit var logger: AppLogger
     private lateinit var updater: AppUpdater
@@ -76,7 +76,7 @@ class MainActivity : ComponentActivity() {
 
         val root = LinearLayout(this).apply {
             orientation = LinearLayout.VERTICAL
-            setBackgroundColor(background)
+            setBackgroundColor(bgColor)
         }
 
         header = TextView(this).apply {
