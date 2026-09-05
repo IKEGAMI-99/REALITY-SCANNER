@@ -7,6 +7,9 @@ on:
       - ".github/workflows/full-apk.yml"
   workflow_dispatch:
 
+permissions:
+  contents: write
+
 jobs:
   build-full:
     runs-on: ubuntu-latest
@@ -50,11 +53,24 @@ jobs:
 
       - name: Rename APK
         run: |
-          cp app/build/outputs/apk/debug/app-debug.apk reality-scanner-v0.1.0-full-debug.apk
-          ls -lh reality-scanner-v0.1.0-full-debug.apk
+          cp app/build/outputs/apk/debug/app-debug.apk REALITY-SCANNER-v0.1.0-FULL-YOLO26x.apk
+          test -s REALITY-SCANNER-v0.1.0-FULL-YOLO26x.apk
+          ls -lh REALITY-SCANNER-v0.1.0-FULL-YOLO26x.apk
 
       - uses: actions/upload-artifact@v4
         with:
           name: reality-scanner-full-ai
-          path: reality-scanner-v0.1.0-full-debug.apk
+          path: REALITY-SCANNER-v0.1.0-FULL-YOLO26x.apk
           retention-days: 30
+
+      - name: Publish GitHub Release APK
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          if gh release view v0.1.0 >/dev/null 2>&1; then
+            gh release upload v0.1.0 REALITY-SCANNER-v0.1.0-FULL-YOLO26x.apk --clobber
+          else
+            gh release create v0.1.0 REALITY-SCANNER-v0.1.0-FULL-YOLO26x.apk \
+              --title "REALITY SCANNER v0.1.0" \
+              --notes "First full local-AI build with YOLO26x embedded."
+          fi
