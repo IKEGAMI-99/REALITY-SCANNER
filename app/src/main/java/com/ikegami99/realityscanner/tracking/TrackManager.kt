@@ -40,28 +40,44 @@ class TrackManager {
         val unmatched = detections.toMutableList()
 
         tracks.forEach { track ->
+            val predicted = predictedBox(track, nowNanos)
             var best: Detection? = null
+            var bestQuality = Float.NEGATIVE_INFINITY
             var bestIou = 0f
+            var bestDistance = Float.MAX_VALUE
+
             unmatched.forEach { detection ->
-                if (detection.label == track.label) {
-                    val overlap = iou(track.box, detection.box)
-                    if (overlap > bestIou) {
-                        bestIou = overlap
-                        best = detection
-                    }
+                if (detection.label != track.label) return@forEach
+
+                val overlap = iou(predicted, detection.box)
+                val dx = predicted.centerX() - detection.box.centerX()
+                val dy = predicted.centerY() - detection.box.centerY()
+                val distance = sqrt(dx * dx + dy * dy)
+
+                // IoU remains the strongest signal, but after a multi-second detector refresh a
+                // moving target may no longer overlap its old box. Center distance keeps the same
+                // Track ID alive when the constant-velocity prediction is close.
+                val quality = overlap * 2.5f - distance
+                if (quality > bestQuality) {
+                    bestQuality = quality
+                    bestIou = overlap
+                    bestDistance = distance
+                    best = detection
                 }
             }
 
             val match = best
-            if (match != null && bestIou >= 0.15f) {
+            if (match != null && (bestIou >= MIN_IOU || bestDistance <= MAX_CENTER_DISTANCE)) {
                 val newCx = match.box.centerX()
                 val newCy = match.box.centerY()
                 val dt = ((nowNanos - track.lastSeenNanos) / 1_000_000_000f).coerceAtLeast(0.001f)
                 val measuredVx = (newCx - track.centerX) / dt
                 val measuredVy = (newCy - track.centerY) / dt
 
-                track.velocityX = track.velocityX * 0.65f + measuredVx * 0.35f
-                track.velocityY = track.velocityY * 0.65f + measuredVy * 0.35f
+                // Slow detector refreshes are noisy. EMA avoids velocity vectors changing wildly
+                // when a box edge shifts a few pixels between YOLO passes.
+                track.velocityX = track.velocityX * 0.55f + measuredVx * 0.45f
+                track.velocityY = track.velocityY * 0.55f + measuredVy * 0.45f
                 track.centerX = newCx
                 track.centerY = newCy
                 track.box = RectF(match.box)
@@ -85,7 +101,9 @@ class TrackManager {
             )
         }
 
-        tracks.removeAll { nowNanos - it.lastSeenNanos > 900_000_000L }
+        // One YOLO26x CPU/XNNPACK pass can still take seconds. Do not throw tracks away before the
+        // next authoritative detector refresh has had a chance to arrive.
+        tracks.removeAll { nowNanos - it.lastSeenNanos > TRACK_TTL_NANOS }
         return snapshot()
     }
 
@@ -102,6 +120,19 @@ class TrackManager {
         )
     }
 
+    private fun predictedBox(track: MutableTrack, nowNanos: Long): RectF {
+        val dt = ((nowNanos - track.lastSeenNanos) / 1_000_000_000f)
+            .coerceIn(0f, MAX_PREDICTION_SECONDS)
+        val dx = track.velocityX * dt
+        val dy = track.velocityY * dt
+        return RectF(
+            track.box.left + dx,
+            track.box.top + dy,
+            track.box.right + dx,
+            track.box.bottom + dy
+        )
+    }
+
     private fun iou(a: RectF, b: RectF): Float {
         val left = max(a.left, b.left)
         val top = max(a.top, b.top)
@@ -110,5 +141,12 @@ class TrackManager {
         val intersection = max(0f, right - left) * max(0f, bottom - top)
         val union = a.width() * a.height() + b.width() * b.height() - intersection
         return if (union <= 0f) 0f else intersection / union
+    }
+
+    companion object {
+        private const val MIN_IOU = 0.05f
+        private const val MAX_CENTER_DISTANCE = 0.20f
+        private const val MAX_PREDICTION_SECONDS = 5.0f
+        private const val TRACK_TTL_NANOS = 6_000_000_000L
     }
 }
