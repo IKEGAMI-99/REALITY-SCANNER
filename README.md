@@ -4,9 +4,9 @@ Android向けの完全ローカルAIリアルタイム物体認識HUDです。
 
 ## APKダウンロード
 
-**YOLO26x内蔵フル版 v0.1.1:**
+**YOLO26x内蔵フル版 v0.1.2:**
 
-[REALITY-SCANNER-v0.1.1-FULL-YOLO26x.apk をダウンロード](https://github.com/IKEGAMI-99/REALITY-SCANNER/releases/download/v0.1.1/REALITY-SCANNER-v0.1.1-FULL-YOLO26x.apk)
+[REALITY-SCANNER-v0.1.2-FULL-YOLO26x.apk をダウンロード](https://github.com/IKEGAMI-99/REALITY-SCANNER/releases/download/v0.1.2/REALITY-SCANNER-v0.1.2-FULL-YOLO26x.apk)
 
 > 約300MB。YOLO26xモデルをAPK内に含むため、別途モデルファイルを用意する必要はありません。
 >
@@ -18,14 +18,17 @@ Android向けの完全ローカルAIリアルタイム物体認識HUDです。
 
 - CameraXによるリアルタイムカメラ
 - 正方形カメラ表示
-- 30fps以上のプレビューをAI推論から分離
-- ONNX RuntimeベースのYOLO検出エンジン
-- NNAPI優先、NNAPIがモデルを拒否した場合はCPUへ自動フォールバック
+- Camera AnalysisとYOLO推論を別スレッドへ完全分離
+- 30fps以上のカメラ解析/HUD更新をAI推論待ちで停止させない構成
+- ONNX RuntimeベースのYOLO26x検出エンジン
+- XNNPACK優先、NNAPI、CPUの順で自動フォールバック
 - COCO 80クラス
 - Track ID
 - BBoxコーナーHUD
 - BBox中央からの速度ベクトル
 - 0.5秒先の予測位置表示
+- YOLO更新間を速度ベクトルでBBox予測描画
+- 遅い検出周期でも予測位置を使ってTrack IDを再マッチング
 - 相対速度表示
 - 低照度自動判定
 - 暗所時の露出補助＋AI入力デジタルゲイン
@@ -36,11 +39,26 @@ Android向けの完全ローカルAIリアルタイム物体認識HUDです。
 - APKダウンロード＋インストーラ起動
 - GitHub ActionsによるAndroidビルド
 
+## v0.1.2 修正
+
+v0.1.1ではPOCO F7 Ultra上でYOLO26xがCPUフォールバック動作し、1回の推論に約3〜4秒かかるため、BBoxも数秒ごとにしか更新されていないように見える問題がありました。
+
+v0.1.2では次を変更しています。
+
+- CameraXのImageAnalysisスレッドとYOLO推論スレッドを分離
+- YOLO推論中もCamera AnalysisとHUD更新を継続
+- BBoxを最大5秒まで速度ベクトルで表示フレームごとに外挿
+- YOLO結果は撮影元フレームのtimestampを保持し、推論遅延分を現在位置へ予測
+- Trackの再マッチング時に過去BBoxではなく予測BBoxを使用
+- 非量子化ONNX向けにXNNPACKを最優先Execution Providerとして追加
+
+これにより、YOLOそのものの更新頻度が低くても、BBox表示は画面リフレッシュに合わせて滑らかに動き、次のYOLO結果で位置が再補正されます。
+
 ## v0.1.1 修正
 
 POCO F7 Ultra上でYOLO26xをNNAPIへロードした際に、ONNX Runtimeが`AddNnapiSplit count [0] does not evenly divide dimension`で失敗する問題へ対応しました。
 
-NNAPIセッション作成に失敗した場合、モデルロード全体を失敗扱いにせず、CPU Execution Providerでセッションを自動再生成します。ターミナルには`NNAPI FAILED -> CPU FALLBACK`と表示されます。
+NNAPIセッション作成に失敗した場合、モデルロード全体を失敗扱いにせず別Execution Providerでセッションを自動再生成します。
 
 ## AIモデル
 
@@ -126,11 +144,11 @@ Androidの仕様上、初回は「不明なアプリのインストール」の�
 
 ## 今後
 
-- ByteTrack本実装への置換
+- ByteTrack / Optical Flowによる実フレーム追跡
 - Depth推定
 - 実距離とm/s速度
 - ジャイロ＋Optical Flowによるカメラ移動補正
-- QNN/HTP最適化
+- Qualcomm QNN / HTPへの直接最適化
 - Night専用YOLO
 - Denoise / Low-Light Enhancement
 - モデルマネージャー
