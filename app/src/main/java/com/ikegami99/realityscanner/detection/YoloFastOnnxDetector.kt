@@ -15,16 +15,11 @@ import java.nio.FloatBuffer
 import kotlin.math.max
 import kotlin.math.min
 
-/**
- * Small ONNX/XNNPACK detector used only when Snapdragon QNN/HTP cannot be initialized.
- * It intentionally uses YOLO26n at 640 instead of falling straight back to YOLO26x/960,
- * because the latter takes ~3.8 s/frame on the reference POCO F7 Ultra.
- */
 class YoloFastOnnxDetector(
     private val context: Context,
     private val logger: AppLogger,
     private val assetName: String = "yolo26n.onnx",
-    private val displayName: String = "YOLO26N-XNN"
+    private val displayName: String = "YOLO26N"
 ) : Detector {
     private val environment = OrtEnvironment.getEnvironment()
     private var session: OrtSession? = null
@@ -33,12 +28,13 @@ class YoloFastOnnxDetector(
     private var inputWidth = 640
     private var inputHeight = 640
     private var attemptedLoad = false
+    private var activeBackend = "PROBE"
 
     override val isReady: Boolean
         get() = session != null
 
     override val backendName: String
-        get() = if (isReady) displayName else "$displayName/PROBE"
+        get() = if (isReady) "$displayName-$activeBackend" else "$displayName/PROBE"
 
     override fun detect(bitmap: Bitmap, rotationDegrees: Int, lowLightGain: Float): List<Detection> {
         ensureLoaded()
@@ -74,7 +70,7 @@ class YoloFastOnnxDetector(
                 }
             }
         } catch (t: Throwable) {
-            logger.error("FAST", "$displayName inference failed: ${t.javaClass.simpleName}: ${t.message}")
+            logger.error("FAST", "$backendName inference failed: ${t.javaClass.simpleName}: ${t.message}")
             close()
             emptyList()
         }
@@ -88,26 +84,51 @@ class YoloFastOnnxDetector(
             return
         }
 
-        val newOptions = OrtSession.SessionOptions()
+        val cores = Runtime.getRuntime().availableProcessors()
+        val threads = (cores - 2).coerceIn(2, 8)
+
+        val xnnOptions = OrtSession.SessionOptions()
         try {
-            val cores = Runtime.getRuntime().availableProcessors()
-            val threads = (cores - 2).coerceIn(2, 8)
-            newOptions.addXnnpack(mapOf("intra_op_num_threads" to threads.toString()))
-            val created = environment.createSession(model.absolutePath, newOptions)
-            inputName = created.inputNames.first()
-            val info = created.inputInfo[inputName]?.info as? TensorInfo
-            val shape = info?.shape
-            if (shape != null && shape.size >= 4) {
-                if (shape[2] > 0) inputHeight = shape[2].toInt()
-                if (shape[3] > 0) inputWidth = shape[3].toInt()
-            }
-            session = created
-            options = newOptions
-            logger.info("FAST", "$displayName loaded input=${inputWidth}x$inputHeight threads=$threads")
+            xnnOptions.addXnnpack(mapOf("intra_op_num_threads" to threads.toString()))
+            val created = environment.createSession(model.absolutePath, xnnOptions)
+            installSession(created, xnnOptions, "XNN", threads)
+            return
         } catch (t: Throwable) {
-            runCatching { newOptions.close() }
-            logger.warn("FAST", "$displayName load failed: ${t.javaClass.simpleName}: ${t.message}")
+            runCatching { xnnOptions.close() }
+            logger.warn("FAST", "XNNPACK unavailable for $displayName: ${t.javaClass.simpleName}: ${t.message}")
         }
+
+        // The QNN Android package may not include XNNPACK. Still keep the small 640px nano model
+        // as the compatibility path instead of escalating to YOLO26x/960 on generic CPU.
+        val cpuOptions = OrtSession.SessionOptions()
+        try {
+            cpuOptions.setIntraOpNumThreads(threads)
+            cpuOptions.setInterOpNumThreads(1)
+            val created = environment.createSession(model.absolutePath, cpuOptions)
+            installSession(created, cpuOptions, "CPU", threads)
+        } catch (t: Throwable) {
+            runCatching { cpuOptions.close() }
+            logger.warn("FAST", "$displayName CPU load failed: ${t.javaClass.simpleName}: ${t.message}")
+        }
+    }
+
+    private fun installSession(
+        created: OrtSession,
+        newOptions: OrtSession.SessionOptions,
+        backend: String,
+        threads: Int
+    ) {
+        inputName = created.inputNames.first()
+        val info = created.inputInfo[inputName]?.info as? TensorInfo
+        val shape = info?.shape
+        if (shape != null && shape.size >= 4) {
+            if (shape[2] > 0) inputHeight = shape[2].toInt()
+            if (shape[3] > 0) inputWidth = shape[3].toInt()
+        }
+        session = created
+        options = newOptions
+        activeBackend = backend
+        logger.info("FAST", "$backendName loaded input=${inputWidth}x$inputHeight threads=$threads")
     }
 
     private fun resolveModel(): File? {
@@ -237,6 +258,7 @@ class YoloFastOnnxDetector(
         runCatching { options?.close() }
         session = null
         options = null
+        activeBackend = "PROBE"
     }
 
     companion object {
