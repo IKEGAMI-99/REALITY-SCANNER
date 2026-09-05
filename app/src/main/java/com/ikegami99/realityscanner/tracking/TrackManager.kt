@@ -54,9 +54,6 @@ class TrackManager {
                 val dy = predicted.centerY() - detection.box.centerY()
                 val distance = sqrt(dx * dx + dy * dy)
 
-                // IoU remains the strongest signal, but after a multi-second detector refresh a
-                // moving target may no longer overlap its old box. Center distance keeps the same
-                // Track ID alive when the constant-velocity prediction is close.
                 val quality = overlap * 2.5f - distance
                 if (quality > bestQuality) {
                     bestQuality = quality
@@ -73,11 +70,26 @@ class TrackManager {
                 val dt = ((nowNanos - track.lastSeenNanos) / 1_000_000_000f).coerceAtLeast(0.001f)
                 val measuredVx = (newCx - track.centerX) / dt
                 val measuredVy = (newCy - track.centerY) / dt
+                val measuredSpeed = sqrt(measuredVx * measuredVx + measuredVy * measuredVy)
 
-                // Slow detector refreshes are noisy. EMA avoids velocity vectors changing wildly
-                // when a box edge shifts a few pixels between YOLO passes.
-                track.velocityX = track.velocityX * 0.55f + measuredVx * 0.45f
-                track.velocityY = track.velocityY * 0.55f + measuredVy * 0.45f
+                if (measuredSpeed < VELOCITY_DEAD_ZONE) {
+                    track.velocityX = 0f
+                    track.velocityY = 0f
+                } else {
+                    val measurementWeight = if (dt > 1.0f) 0.25f else 0.45f
+                    val historyWeight = 1f - measurementWeight
+                    track.velocityX = track.velocityX * historyWeight + measuredVx * measurementWeight
+                    track.velocityY = track.velocityY * historyWeight + measuredVy * measurementWeight
+
+                    val filteredSpeed = sqrt(
+                        track.velocityX * track.velocityX + track.velocityY * track.velocityY
+                    )
+                    if (filteredSpeed < VELOCITY_DEAD_ZONE) {
+                        track.velocityX = 0f
+                        track.velocityY = 0f
+                    }
+                }
+
                 track.centerX = newCx
                 track.centerY = newCy
                 track.box = RectF(match.box)
@@ -101,8 +113,6 @@ class TrackManager {
             )
         }
 
-        // One YOLO26x CPU/XNNPACK pass can still take seconds. Do not throw tracks away before the
-        // next authoritative detector refresh has had a chance to arrive.
         tracks.removeAll { nowNanos - it.lastSeenNanos > TRACK_TTL_NANOS }
         return snapshot()
     }
@@ -120,7 +130,15 @@ class TrackManager {
         )
     }
 
+    @Synchronized
+    fun clear() {
+        tracks.clear()
+    }
+
     private fun predictedBox(track: MutableTrack, nowNanos: Long): RectF {
+        val speed = sqrt(track.velocityX * track.velocityX + track.velocityY * track.velocityY)
+        if (speed < VELOCITY_DEAD_ZONE) return RectF(track.box)
+
         val dt = ((nowNanos - track.lastSeenNanos) / 1_000_000_000f)
             .coerceIn(0f, MAX_PREDICTION_SECONDS)
         val dx = track.velocityX * dt
@@ -146,7 +164,8 @@ class TrackManager {
     companion object {
         private const val MIN_IOU = 0.05f
         private const val MAX_CENTER_DISTANCE = 0.20f
-        private const val MAX_PREDICTION_SECONDS = 5.0f
+        private const val MAX_PREDICTION_SECONDS = 1.2f
         private const val TRACK_TTL_NANOS = 6_000_000_000L
+        private const val VELOCITY_DEAD_ZONE = 0.025f
     }
 }
