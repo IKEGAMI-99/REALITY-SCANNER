@@ -85,9 +85,6 @@ class MainActivity : ComponentActivity() {
                 output.flush()
             }
 
-            // Some document providers can create the destination file successfully but fail to
-            // persist the payload. Treat a provider-reported 0-byte file as a real failure instead
-            // of displaying the old false-positive "export completed" message.
             val providerSize = runCatching {
                 contentResolver.openFileDescriptor(uri, "r")?.use { it.statSize }
             }.getOrNull()
@@ -180,13 +177,13 @@ class MainActivity : ComponentActivity() {
             runOnUiThread { terminal.append(entry) }
         }
 
-        // QNN/HTP is the preferred live path. If the vendor firmware rejects the context binary,
-        // fall back to the 640px nano detector on XNNPACK before ever considering YOLO26x/960.
+        // External QNN EPContext bundles keep the wrapper ONNX and companion context binary
+        // side-by-side to avoid embedded-context loading failures on current ORT/QNN builds.
         val detector = DetectorCascade(
             logger,
             listOf(
-                YoloQnnDetector(applicationContext, logger, "yolo26s_v79_qnn.onnx", "YOLO26S-QNN"),
-                YoloQnnDetector(applicationContext, logger, "yolo26n_v79_qnn.onnx", "YOLO26N-QNN"),
+                YoloQnnDetector(applicationContext, logger, "qnn_s/model.onnx", "YOLO26S-QNN"),
+                YoloQnnDetector(applicationContext, logger, "qnn_n/model.onnx", "YOLO26N-QNN"),
                 YoloFastOnnxDetector(applicationContext, logger, "yolo26n.onnx", "YOLO26N-XNN"),
                 YoloOnnxDetector(applicationContext, logger)
             )
@@ -206,7 +203,7 @@ class MainActivity : ComponentActivity() {
         logger.info("SYSTEM", "boot sequence start")
         logger.info("SYSTEM", "device=${android.os.Build.MANUFACTURER} ${android.os.Build.MODEL}")
         logger.info("SYSTEM", "offline hybrid inference pipeline ready")
-        logger.info("MODEL", "priority=QNN-S > QNN-N > XNN-N > XNN-X")
+        logger.info("MODEL", "priority=QNN-S(ext) > QNN-N(ext) > XNN-N > XNN-X")
 
         ensureCamera()
         checkUpdate(manual = false)
