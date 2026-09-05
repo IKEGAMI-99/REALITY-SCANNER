@@ -2,10 +2,14 @@ package com.ikegami99.realityscanner
 
 import android.Manifest
 import android.app.AlertDialog
+import android.content.ContentValues
 import android.content.pm.PackageManager
 import android.graphics.Color
 import android.graphics.Typeface
+import android.os.Build
 import android.os.Bundle
+import android.os.Environment
+import android.provider.MediaStore
 import android.view.Gravity
 import android.view.ViewGroup
 import android.widget.FrameLayout
@@ -45,10 +49,6 @@ class MainActivity : ComponentActivity() {
     private lateinit var cameraController: CameraController
     private lateinit var header: TextView
 
-    // Kept as a fast in-process copy, but the authoritative pending payload is also written to
-    // cache before DocumentsUI opens so process recreation cannot turn the destination into 0 B.
-    private var pendingExport: String? = null
-
     private val requestCamera = registerForActivityResult(
         ActivityResultContracts.RequestPermission()
     ) { granted ->
@@ -57,75 +57,6 @@ class MainActivity : ComponentActivity() {
             cameraController.start()
         } else {
             logger.error("CAMERA", "permission denied")
-        }
-    }
-
-    private val exportDocument = registerForActivityResult(
-        ActivityResultContracts.CreateDocument("application/json")
-    ) { uri ->
-        val stagedFile = pendingExportFile()
-        val data = pendingExport ?: runCatching {
-            stagedFile.takeIf { it.exists() && it.length() > 0L }?.readText(Charsets.UTF_8)
-        }.getOrNull()
-        pendingExport = null
-
-        if (uri == null) {
-            stagedFile.delete()
-            logger.warn("LOG", "export cancelled")
-            return@registerForActivityResult
-        }
-        if (data == null) {
-            logger.error("LOG", "export failed: staged payload missing after document picker")
-            return@registerForActivityResult
-        }
-
-        val bytes = data.toByteArray(Charsets.UTF_8)
-        if (bytes.isEmpty()) {
-            logger.error("LOG", "export failed: payload is 0 bytes")
-            return@registerForActivityResult
-        }
-
-        runCatching {
-            // Prefer a real file descriptor with truncate semantics. Fall back to OutputStream for
-            // providers that expose only a pipe-style document URI.
-            val wroteViaFd = runCatching {
-                contentResolver.openFileDescriptor(uri, "rwt")?.use { pfd ->
-                    FileOutputStream(pfd.fileDescriptor).use { output ->
-                        output.write(bytes)
-                        output.flush()
-                        runCatching { output.fd.sync() }
-                    }
-                    true
-                } ?: false
-            }.getOrDefault(false)
-
-            if (!wroteViaFd) {
-                val stream = contentResolver.openOutputStream(uri, "w")
-                    ?: throw IOException("ContentResolver returned a null output stream")
-                stream.buffered().use { output ->
-                    output.write(bytes)
-                    output.flush()
-                }
-            }
-
-            val providerSize = runCatching {
-                contentResolver.openFileDescriptor(uri, "r")?.use { it.statSize }
-            }.getOrNull()
-            if (providerSize == 0L) {
-                throw IOException("document provider reported 0 bytes after write")
-            }
-
-            providerSize
-        }.onSuccess { providerSize ->
-            stagedFile.delete()
-            val verified = if (providerSize != null && providerSize >= 0L) {
-                " providerBytes=$providerSize"
-            } else {
-                ""
-            }
-            logger.info("LOG", "export completed bytes=${bytes.size}$verified")
-        }.onFailure {
-            logger.error("LOG", "export failed: ${it.javaClass.simpleName}: ${it.message}")
         }
     }
 
@@ -225,7 +156,7 @@ class MainActivity : ComponentActivity() {
         logger.info("SYSTEM", "boot sequence start")
         logger.info("SYSTEM", "device=${android.os.Build.MANUFACTURER} ${android.os.Build.MODEL}")
         logger.info("SYSTEM", "offline hybrid inference pipeline ready")
-        logger.info("MODEL", "priority=QNN-S(ext) > QNN-N(ext) > XNN-N > XNN-X")
+        logger.info("MODEL", "priority=QNN-S(ext) > QNN-N(ext) > YOLO26N-small > YOLO26X-compat")
 
         ensureCamera()
         checkUpdate(manual = false)
@@ -241,39 +172,129 @@ class MainActivity : ComponentActivity() {
         }
     }
 
-    private fun pendingExportFile(): File = File(cacheDir, "pending_reality_scanner_log.json")
-
     private fun exportLogs() {
         val payload = logger.exportJson()
         val bytes = payload.toByteArray(Charsets.UTF_8)
         if (bytes.isEmpty()) {
-            logger.error("LOG", "export preparation failed: generated payload is empty")
+            logger.error("LOG", "export failed: generated payload is empty")
             return
         }
 
-        val stagedFile = pendingExportFile()
-        val staged = runCatching {
-            FileOutputStream(stagedFile, false).use { output ->
+        val stamp = SimpleDateFormat("yyyyMMdd_HHmmss", Locale.US).format(Date())
+        val fileName = "reality_scanner_log_$stamp.json"
+        logger.info("LOG", "export begin bytes=${bytes.size} target=$fileName")
+
+        Thread {
+            runCatching {
+                if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
+                    exportViaMediaStore(fileName, bytes)
+                } else {
+                    exportLegacy(fileName, bytes)
+                }
+            }.onSuccess { result ->
+                logger.info("LOG", result)
+            }.onFailure { error ->
+                logger.error("LOG", "export failed: ${error.javaClass.simpleName}: ${error.message}")
+            }
+        }.start()
+    }
+
+    private fun exportViaMediaStore(fileName: String, bytes: ByteArray): String {
+        val values = ContentValues().apply {
+            put(MediaStore.MediaColumns.DISPLAY_NAME, fileName)
+            put(MediaStore.MediaColumns.MIME_TYPE, "application/json")
+            put(
+                MediaStore.MediaColumns.RELATIVE_PATH,
+                Environment.DIRECTORY_DOWNLOADS + "/REALITY_SCANNER"
+            )
+            put(MediaStore.MediaColumns.IS_PENDING, 1)
+        }
+
+        val uri = contentResolver.insert(MediaStore.Downloads.EXTERNAL_CONTENT_URI, values)
+            ?: throw IOException("MediaStore insert returned null")
+
+        try {
+            val stream = contentResolver.openOutputStream(uri, "w")
+                ?: throw IOException("MediaStore returned null output stream")
+            stream.use { output ->
                 output.write(bytes)
                 output.flush()
-                runCatching { output.fd.sync() }
             }
-            stagedFile.length()
-        }.getOrElse {
-            logger.error("LOG", "export staging failed: ${it.javaClass.simpleName}: ${it.message}")
-            return
+
+            val finalizeValues = ContentValues().apply {
+                put(MediaStore.MediaColumns.IS_PENDING, 0)
+            }
+            val updatedRows = contentResolver.update(uri, finalizeValues, null, null)
+            if (updatedRows <= 0) {
+                throw IOException("MediaStore could not finalize pending file")
+            }
+
+            // Do not trust the provider's metadata alone. Re-open the exact URI and count the
+            // bytes that can actually be read back. EXPORT is successful only if they match.
+            val readBackBytes = contentResolver.openInputStream(uri)?.use { input ->
+                var total = 0L
+                val buffer = ByteArray(16 * 1024)
+                while (true) {
+                    val count = input.read(buffer)
+                    if (count < 0) break
+                    total += count
+                }
+                total
+            } ?: throw IOException("MediaStore read-back stream was null")
+
+            if (readBackBytes != bytes.size.toLong()) {
+                throw IOException("read-back mismatch wrote=${bytes.size} read=$readBackBytes")
+            }
+
+            val metadataSize = runCatching {
+                contentResolver.query(
+                    uri,
+                    arrayOf(MediaStore.MediaColumns.SIZE),
+                    null,
+                    null,
+                    null
+                )?.use { cursor ->
+                    if (!cursor.moveToFirst()) null
+                    else cursor.getLong(0)
+                }
+            }.getOrNull()
+
+            contentResolver.notifyChange(uri, null)
+            return "export completed // Downloads/REALITY_SCANNER/$fileName // " +
+                "verifiedBytes=$readBackBytes metadataBytes=${metadataSize ?: -1L}"
+        } catch (t: Throwable) {
+            runCatching { contentResolver.delete(uri, null, null) }
+            throw t
+        }
+    }
+
+    private fun exportLegacy(fileName: String, bytes: ByteArray): String {
+        val base = getExternalFilesDir(Environment.DIRECTORY_DOWNLOADS)
+            ?: throw IOException("external downloads directory unavailable")
+        val dir = File(base, "REALITY_SCANNER").apply { mkdirs() }
+        val file = File(dir, fileName)
+
+        FileOutputStream(file, false).use { output ->
+            output.write(bytes)
+            output.flush()
+            runCatching { output.fd.sync() }
         }
 
-        if (staged <= 0L) {
-            logger.error("LOG", "export staging failed: cache file is 0 bytes")
-            return
+        val readBackBytes = file.inputStream().use { input ->
+            var total = 0L
+            val buffer = ByteArray(16 * 1024)
+            while (true) {
+                val count = input.read(buffer)
+                if (count < 0) break
+                total += count
+            }
+            total
         }
-
-        pendingExport = payload
-        logger.info("LOG", "export staged bytes=$staged")
-        val stamp = SimpleDateFormat("yyyyMMdd_HHmmss", Locale.US).format(Date())
-        exportDocument.launch("reality_scanner_log_$stamp.json")
-        logger.info("LOG", "export UI opened")
+        if (readBackBytes != bytes.size.toLong()) {
+            file.delete()
+            throw IOException("legacy read-back mismatch wrote=${bytes.size} read=$readBackBytes")
+        }
+        return "export completed // ${file.absolutePath} // verifiedBytes=$readBackBytes"
     }
 
     private fun checkUpdate(manual: Boolean) {
