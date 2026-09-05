@@ -1,0 +1,57 @@
+name: Full AI APK
+
+on:
+  push:
+    branches: ["main"]
+    paths:
+      - ".github/workflows/full-apk.yml"
+  workflow_dispatch:
+
+jobs:
+  build-full:
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-java@v5
+        with:
+          distribution: temurin
+          java-version: "17"
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+
+      - uses: gradle/actions/setup-gradle@v4
+        with:
+          gradle-version: "9.6.0"
+
+      - name: Install YOLO export dependencies
+        run: |
+          python -m pip install --upgrade pip
+          python -m pip install ultralytics onnx onnxslim
+
+      - name: Export YOLO26x to ONNX
+        run: |
+          python scripts/export_yolo26.py
+          test -s yolo26x.onnx
+          mkdir -p app/src/main/assets/models
+          mv yolo26x.onnx app/src/main/assets/models/yolo26x.onnx
+          ls -lh app/src/main/assets/models/yolo26x.onnx
+
+      - name: Build full debug APK
+        run: gradle :app:assembleDebug --stacktrace
+
+      - name: Rename APK
+        run: |
+          cp app/build/outputs/apk/debug/app-debug.apk reality-scanner-v0.1.0-full-debug.apk
+          ls -lh reality-scanner-v0.1.0-full-debug.apk
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: reality-scanner-full-ai
+          path: reality-scanner-v0.1.0-full-debug.apk
+          retention-days: 30
