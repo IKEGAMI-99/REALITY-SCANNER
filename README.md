@@ -4,13 +4,13 @@ Android向けの完全ローカルAIリアルタイム物体認識HUDです。
 
 ## APKダウンロード
 
-**Snapdragon QNN / HTP対応 v0.1.3:**
+**Snapdragon QNN / HTP対応 v0.1.4:**
 
-[REALITY-SCANNER-v0.1.3-QNN-HYBRID.apk をダウンロード](https://github.com/IKEGAMI-99/REALITY-SCANNER/releases/download/v0.1.3/REALITY-SCANNER-v0.1.3-QNN-HYBRID.apk)
+[REALITY-SCANNER-v0.1.4-QNN-FIX.apk をダウンロード](https://github.com/IKEGAMI-99/REALITY-SCANNER/releases/download/v0.1.4/REALITY-SCANNER-v0.1.4-QNN-FIX.apk)
 
-> 約290MB。YOLO26s/YOLO26nのQNNモデルとYOLO26x互換フォールバックモデルをAPK内に含みます。
+> 約299MB。YOLO26s / YOLO26nのQNNモデル、YOLO26n 640 XNNPACKフォールバック、YOLO26x互換モデルをAPK内に含みます。
 >
-> v0.1.1以降は固定debug署名を使用しているため、v0.1.2からv0.1.3はアプリ内UPDATEで上書き更新できます。
+> v0.1.1以降は固定debug署名を使用しているため、アプリ内UPDATEから上書き更新できます。
 
 黒背景＋グリーンのCLI/タクティカルUIで、画面上部を正方形カメラ、下部を実処理ログが流れるライブターミナルとして構成しています。
 
@@ -21,20 +21,19 @@ Android向けの完全ローカルAIリアルタイム物体認識HUDです。
 - Android system bar / display cutoutを避けるSafe Insets対応
 - Camera AnalysisとYOLO推論を別スレッドへ完全分離
 - Qualcomm QNN / Hexagon HTPを最優先バックエンドとして使用
-- YOLO26s QNN → YOLO26n QNN → YOLO26x ONNXの順に自動フォールバック
 - HTP v79向けQNNコンテキストモデルを同梱
-- QNN時は640x640入力、YOLO26x互換フォールバックは960x960入力
-- AI推論要求間隔を40msまで短縮
+- QNN時は640x640入力
+- QNN失敗時はYOLO26n 640 XNNPACKへ高速フォールバック
+- 最終互換用としてYOLO26x 960 ONNXも同梱
+- AI推論要求間隔40ms
 - COCO 80クラス
 - Track ID
 - BBoxコーナーHUD
 - BBox中央からの速度ベクトル
 - 0.5秒先の予測位置表示
-- YOLO更新間を速度ベクトルでBBox予測描画
-- 古いBBoxの外挿を0.6秒で停止し、暴走するPRED表示を抑制
+- 古いBBoxの外挿を0.6秒で停止
 - 相対速度表示
-- 低照度自動判定
-- Low Light AUTOにヒステリシスを追加し、閾値付近のON/OFF連打を防止
+- 低照度自動判定＋ヒステリシス
 - 暗所時の露出補助＋AI入力デジタルゲイン
 - 黒＋グリーンのCLI UI
 - リアルタイム処理ログ
@@ -43,11 +42,22 @@ Android向けの完全ローカルAIリアルタイム物体認識HUDです。
 - APKダウンロード＋インストーラ起動
 - GitHub ActionsによるAndroidビルド
 
-## v0.1.3 修正
+## v0.1.4 修正
 
-v0.1.2ではPOCO F7 Ultra上でカメラ/HUD側は25〜30fpsまで戻ったものの、YOLO26x本体はXNNPACKで約3.2〜3.9秒/回の推論時間が残っていました。
+POCO F7 Ultra上のv0.1.3では、QNN/HTP初期化に失敗して最終フォールバックのYOLO26x / CPU系実行へ落ち、約3.8秒/推論になっていました。
 
-v0.1.3ではCPU最適化を続けるのではなく、Snapdragon 8 EliteのHexagon NPUを直接使うQNN経路を追加しています。
+v0.1.4ではQNN context binary生成側とAndroid実行側のバージョンを揃えています。
+
+```text
+AOT export:
+ONNX Runtime 1.26.0
+onnxruntime-qnn 2.4.0
+QAIRT compatibility 2.48.x
+
+Android:
+onnxruntime-android-qnn 1.26.0
+qnn-runtime 2.48.0
+```
 
 起動時の優先順位:
 
@@ -56,10 +66,14 @@ YOLO26s QNN / HTP v79
         ↓ load failed
 YOLO26n QNN / HTP v79
         ↓ load failed
-YOLO26x ONNX / XNNPACK
+YOLO26n ONNX / XNNPACK 640
+        ↓ load failed
+YOLO26x ONNX / compatibility fallback
 ```
 
-ターミナルで正常にNPUへ載った場合は、例えば次のように表示されます。
+そのため、QNNが端末ファームウェア側の理由で利用できない場合でも、従来の約4秒/回のYOLO26xへ直行せず、まず640pxのYOLO26n XNNPACKを使います。
+
+正常にNPUへ載った場合はターミナルに次のように表示されます。
 
 ```text
 [QNN][INFO] YOLO26S-QNN loaded on HTP input=640x640
@@ -67,9 +81,19 @@ YOLO26x ONNX / XNNPACK
 [YOLO][INFO] ... backend=YOLO26S-QNN/HTP
 ```
 
-QNNが利用できない場合でも、従来のYOLO26x経路へ自動フォールバックします。
+QNNが失敗して高速CPUフォールバックへ入った場合:
 
-また、Android 15以降のedge-to-edge表示で上部ヘッダーが時計・カメラカットアウト・ステータスバーに潜り込む問題をSafe Insetsで修正しました。
+```text
+[FAST][INFO] YOLO26N-XNN loaded input=640x640
+[MODEL][INFO] selected live detector YOLO26N-XNN
+[YOLO][INFO] ... backend=YOLO26N-XNN
+```
+
+## v0.1.3 修正
+
+- Snapdragon 8 Elite向けQNN / Hexagon HTP経路を追加
+- YOLO26s / YOLO26n QNNモデルを追加
+- Safe Insetsで上部UI被りを修正
 
 ## v0.1.2 修正
 
@@ -90,6 +114,7 @@ POCO F7 Ultra上でYOLO26xをNNAPIへロードした際に、ONNX Runtimeが`Add
 ```text
 models/yolo26s_v79_qnn.onnx
 models/yolo26n_v79_qnn.onnx
+models/yolo26n.onnx
 models/yolo26x.onnx
 ```
 
@@ -104,8 +129,6 @@ YOLO26x互換モデル生成:
 ```bash
 python scripts/export_yolo26.py
 ```
-
-QNNモデルは`format=qnn`, `name=79`, `imgsz=640`で生成します。
 
 ## レイアウト
 
