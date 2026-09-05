@@ -2,6 +2,14 @@
 
 Android向けの完全ローカルAIリアルタイム物体認識HUDです。
 
+## APKダウンロード
+
+**YOLO26x内蔵フル版:**
+
+[REALITY-SCANNER-v0.1.0-FULL-YOLO26x.apk をダウンロード](https://github.com/IKEGAMI-99/REALITY-SCANNER/releases/download/v0.1.0/REALITY-SCANNER-v0.1.0-FULL-YOLO26x.apk)
+
+> 約300MB。YOLO26xモデルをAPK内に含むため、別途モデルファイルを用意する必要はありません。
+
 黒背景＋グリーンのCLI/タクティカルUIで、画面上部を正方形カメラ、下部を実処理ログが流れるライブターミナルとして構成しています。
 
 ## 現在の実装
@@ -28,7 +36,7 @@ Android向けの完全ローカルAIリアルタイム物体認識HUDです。
 
 ## AIモデル
 
-巨大なモデルバイナリはソースコミットには含めていません。
+通常のソースツリーには巨大なモデルバイナリを含めていません。
 
 YOLO26xをONNXへexportし、以下のどちらかへ配置します。
 
