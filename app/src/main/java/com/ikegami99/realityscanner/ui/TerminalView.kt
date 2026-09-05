@@ -6,6 +6,7 @@ import android.graphics.Typeface
 import android.graphics.drawable.GradientDrawable
 import android.util.AttributeSet
 import android.view.Gravity
+import android.widget.FrameLayout
 import android.widget.LinearLayout
 import android.widget.ScrollView
 import android.widget.TextView
@@ -18,7 +19,7 @@ class TerminalView @JvmOverloads constructor(
 
     private val green = Color.rgb(112, 255, 112)
     private val dim = Color.rgb(42, 150, 62)
-    private val background = Color.rgb(2, 6, 2)
+    private val bgColor = Color.rgb(2, 6, 2)
 
     private val scroll = ScrollView(context)
     private val output = TextView(context)
@@ -30,7 +31,7 @@ class TerminalView @JvmOverloads constructor(
 
     init {
         orientation = VERTICAL
-        setBackgroundColor(background)
+        setBackgroundColor(bgColor)
 
         val title = TextView(context).apply {
             text = ">> PROCESS TERMINAL // LIVE"
@@ -39,7 +40,13 @@ class TerminalView @JvmOverloads constructor(
             typeface = Typeface.MONOSPACE
             setPadding(dp(10), dp(7), dp(10), dp(7))
         }
-        addView(title, LayoutParams(LayoutParams.MATCH_PARENT, LayoutParams.WRAP_CONTENT))
+        addView(
+            title,
+            LinearLayout.LayoutParams(
+                LinearLayout.LayoutParams.MATCH_PARENT,
+                LinearLayout.LayoutParams.WRAP_CONTENT
+            )
+        )
 
         output.apply {
             setTextColor(green)
@@ -51,9 +58,18 @@ class TerminalView @JvmOverloads constructor(
         }
         scroll.apply {
             isFillViewport = true
-            addView(output, ScrollView.LayoutParams(LayoutParams.MATCH_PARENT, LayoutParams.WRAP_CONTENT))
+            addView(
+                output,
+                FrameLayout.LayoutParams(
+                    FrameLayout.LayoutParams.MATCH_PARENT,
+                    FrameLayout.LayoutParams.WRAP_CONTENT
+                )
+            )
         }
-        addView(scroll, LayoutParams(LayoutParams.MATCH_PARENT, 0, 1f))
+        addView(
+            scroll,
+            LinearLayout.LayoutParams(LinearLayout.LayoutParams.MATCH_PARENT, 0, 1f)
+        )
 
         val controls = LinearLayout(context).apply {
             orientation = HORIZONTAL
@@ -63,7 +79,7 @@ class TerminalView @JvmOverloads constructor(
 
         val pause = cliButton("[ PAUSE ]") {
             paused = !paused
-            (it as TextView).text = if (paused) "[ RESUME ]" else "[ PAUSE ]"
+            it.text = if (paused) "[ RESUME ]" else "[ PAUSE ]"
         }
         val clear = cliButton("[ CLEAR ]") {
             lines.clear()
@@ -72,11 +88,17 @@ class TerminalView @JvmOverloads constructor(
         val export = cliButton("[ EXPORT ]") { onExport?.invoke() }
         val update = cliButton("[ UPDATE ]") { onUpdate?.invoke() }
 
-        controls.addView(pause, LayoutParams(0, dp(36), 1f))
-        controls.addView(clear, LayoutParams(0, dp(36), 1f))
-        controls.addView(export, LayoutParams(0, dp(36), 1f))
-        controls.addView(update, LayoutParams(0, dp(36), 1f))
-        addView(controls, LayoutParams(LayoutParams.MATCH_PARENT, LayoutParams.WRAP_CONTENT))
+        controls.addView(pause, LinearLayout.LayoutParams(0, dp(36), 1f))
+        controls.addView(clear, LinearLayout.LayoutParams(0, dp(36), 1f))
+        controls.addView(export, LinearLayout.LayoutParams(0, dp(36), 1f))
+        controls.addView(update, LinearLayout.LayoutParams(0, dp(36), 1f))
+        addView(
+            controls,
+            LinearLayout.LayoutParams(
+                LinearLayout.LayoutParams.MATCH_PARENT,
+                LinearLayout.LayoutParams.WRAP_CONTENT
+            )
+        )
     }
 
     fun append(entry: AppLogger.Entry) {
@@ -99,7 +121,7 @@ class TerminalView @JvmOverloads constructor(
             textSize = 10f
             typeface = Typeface.MONOSPACE
             background = GradientDrawable().apply {
-                setColor(background)
+                setColor(bgColor)
                 setStroke(dp(1), dim)
                 cornerRadius = 0f
             }
