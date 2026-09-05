@@ -22,6 +22,7 @@ class YoloOnnxDetector(
 
     private val environment: OrtEnvironment = OrtEnvironment.getEnvironment()
     private var session: OrtSession? = null
+    private var sessionOptions: OrtSession.SessionOptions? = null
     private var inputName: String = ""
     private var inputWidth: Int = 960
     private var inputHeight: Int = 960
@@ -94,44 +95,75 @@ class YoloOnnxDetector(
             return
         }
 
-        logger.info("MODEL", "loading ${model.name} // trying NNAPI first")
-
-        val nnapiSession = try {
-            val options = OrtSession.SessionOptions()
-            options.addNnapi()
-            environment.createSession(model.absolutePath, options)
-        } catch (t: Throwable) {
-            logger.warn(
-                "NPU",
-                "NNAPI session rejected model: ${t.javaClass.simpleName}: ${t.message}"
-            )
-            null
+        // The stock ORT Android package contains XNNPACK. For this large FP32/FP16-style
+        // convolutional graph it is substantially more useful than falling straight back to
+        // the generic CPU EP, and unlike NNAPI it does not reject YOLO26's Split graph on the
+        // reference POCO F7 Ultra.
+        logger.info("MODEL", "loading ${model.name} // trying XNNPACK first")
+        val xnn = createSession(model, Backend.XNNPACK)
+        if (xnn != null) {
+            installSession(xnn.first, xnn.second, "XNNPACK", model)
+            return
         }
 
-        if (nnapiSession != null) {
-            installSession(nnapiSession, "NNAPI", model)
+        logger.warn("MODEL", "XNNPACK unavailable -> trying NNAPI")
+        val nnapi = createSession(model, Backend.NNAPI)
+        if (nnapi != null) {
+            installSession(nnapi.first, nnapi.second, "NNAPI", model)
             return
         }
 
         logger.warn("NPU", "NNAPI FAILED -> CPU FALLBACK")
-        logger.info("MODEL", "rebuilding ONNX Runtime session with CPU provider")
+        val cpu = createSession(model, Backend.CPU)
+        if (cpu != null) {
+            installSession(cpu.first, cpu.second, "CPU", model)
+            return
+        }
 
-        try {
-            val cpuOptions = OrtSession.SessionOptions()
-            val cpuSession = environment.createSession(model.absolutePath, cpuOptions)
-            installSession(cpuSession, "CPU", model)
+        backendName = "LOAD ERROR"
+        logger.error("MODEL", "all ONNX Runtime execution providers failed")
+    }
+
+    private enum class Backend { XNNPACK, NNAPI, CPU }
+
+    private fun createSession(
+        model: File,
+        backend: Backend
+    ): Pair<OrtSession, OrtSession.SessionOptions>? {
+        val options = OrtSession.SessionOptions()
+        return try {
+            when (backend) {
+                Backend.XNNPACK -> {
+                    val cores = Runtime.getRuntime().availableProcessors()
+                    val threads = (cores - 2).coerceIn(2, 8)
+                    options.addXnnpack(mapOf("intra_op_num_threads" to threads.toString()))
+                    logger.info("MODEL", "XNNPACK threads=$threads")
+                }
+                Backend.NNAPI -> options.addNnapi()
+                Backend.CPU -> Unit
+            }
+            environment.createSession(model.absolutePath, options) to options
         } catch (t: Throwable) {
-            backendName = "LOAD ERROR"
-            logger.error(
-                "MODEL",
-                "CPU fallback also failed: ${t.javaClass.simpleName}: ${t.message}"
+            val tag = if (backend == Backend.NNAPI) "NPU" else "MODEL"
+            logger.warn(
+                tag,
+                "${backend.name} session rejected model: ${t.javaClass.simpleName}: ${t.message}"
             )
+            runCatching { options.close() }
+            null
         }
     }
 
-    private fun installSession(newSession: OrtSession, backend: String, model: File) {
+    private fun installSession(
+        newSession: OrtSession,
+        newOptions: OrtSession.SessionOptions,
+        backend: String,
+        model: File
+    ) {
         runCatching { session?.close() }
+        runCatching { sessionOptions?.close() }
         session = newSession
+        sessionOptions = newOptions
         inputName = newSession.inputNames.first()
 
         val info = newSession.inputInfo[inputName]?.info as? TensorInfo
@@ -300,7 +332,9 @@ class YoloOnnxDetector(
 
     override fun close() {
         runCatching { session?.close() }
+        runCatching { sessionOptions?.close() }
         session = null
+        sessionOptions = null
     }
 
     companion object {
