@@ -15,8 +15,12 @@ import androidx.activity.ComponentActivity
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.camera.view.PreviewView
 import androidx.core.content.ContextCompat
+import androidx.core.view.ViewCompat
+import androidx.core.view.WindowInsetsCompat
 import com.ikegami99.realityscanner.camera.CameraController
+import com.ikegami99.realityscanner.detection.DetectorCascade
 import com.ikegami99.realityscanner.detection.YoloOnnxDetector
+import com.ikegami99.realityscanner.detection.YoloQnnDetector
 import com.ikegami99.realityscanner.logging.AppLogger
 import com.ikegami99.realityscanner.tracking.TrackManager
 import com.ikegami99.realityscanner.ui.HudOverlayView
@@ -79,13 +83,29 @@ class MainActivity : ComponentActivity() {
             setBackgroundColor(bgColor)
         }
 
+        // Android 15+ enforces edge-to-edge for modern targets. Keep the tactical header and
+        // terminal controls inside the real status/navigation bar safe area instead of drawing
+        // underneath the clock, camera cutout or gesture bar.
+        ViewCompat.setOnApplyWindowInsetsListener(root) { view, insets ->
+            val systemBars = insets.getInsets(WindowInsetsCompat.Type.systemBars())
+            val cutout = insets.getInsets(WindowInsetsCompat.Type.displayCutout())
+            view.setPadding(
+                maxOf(systemBars.left, cutout.left),
+                maxOf(systemBars.top, cutout.top),
+                maxOf(systemBars.right, cutout.right),
+                maxOf(systemBars.bottom, cutout.bottom)
+            )
+            insets
+        }
+
         header = TextView(this).apply {
-            text = "REALITY SCANNER v${BuildConfig.VERSION_NAME} // LOCAL\nMODE ULTRA  LOW LIGHT AUTO"
+            text = "REALITY SCANNER v${BuildConfig.VERSION_NAME} // LOCAL\nMODE HYBRID  LOW LIGHT AUTO"
             setTextColor(green)
             typeface = Typeface.MONOSPACE
             textSize = 12f
             gravity = Gravity.CENTER_VERTICAL
-            setPadding(dp(10), dp(8), dp(10), dp(8))
+            setPadding(dp(10), dp(7), dp(10), dp(7))
+            setBackgroundColor(Color.rgb(1, 8, 2))
         }
         root.addView(
             header,
@@ -121,12 +141,22 @@ class MainActivity : ComponentActivity() {
         )
 
         setContentView(root)
+        ViewCompat.requestApplyInsets(root)
 
         logger.addListener { entry ->
             runOnUiThread { terminal.append(entry) }
         }
 
-        val detector = YoloOnnxDetector(applicationContext, logger)
+        // Prefer the Snapdragon Hexagon NPU. The small QNN models keep live boxes responsive;
+        // the large YOLO26x ONNX remains the final compatibility fallback if QNN is unavailable.
+        val detector = DetectorCascade(
+            logger,
+            listOf(
+                YoloQnnDetector(applicationContext, logger, "yolo26s_v79_qnn.onnx", "YOLO26S-QNN"),
+                YoloQnnDetector(applicationContext, logger, "yolo26n_v79_qnn.onnx", "YOLO26N-QNN"),
+                YoloOnnxDetector(applicationContext, logger)
+            )
+        )
         cameraController = CameraController(
             lifecycleOwner = this,
             previewView = preview,
@@ -141,7 +171,7 @@ class MainActivity : ComponentActivity() {
 
         logger.info("SYSTEM", "boot sequence start")
         logger.info("SYSTEM", "device=${android.os.Build.MANUFACTURER} ${android.os.Build.MODEL}")
-        logger.info("SYSTEM", "offline inference pipeline ready")
+        logger.info("SYSTEM", "offline hybrid inference pipeline ready")
 
         ensureCamera()
         checkUpdate(manual = false)
@@ -173,7 +203,7 @@ class MainActivity : ComponentActivity() {
                     is AppUpdater.Result.Available -> {
                         header.text =
                             "REALITY SCANNER v${BuildConfig.VERSION_NAME} // UPDATE ${result.release.version}\n" +
-                            "MODE ULTRA  LOW LIGHT AUTO"
+                            "MODE HYBRID  LOW LIGHT AUTO"
 
                         if (manual) {
                             AlertDialog.Builder(this)
