@@ -24,6 +24,7 @@ class YoloQnnDetector(
 ) : Detector {
     private val environment = OrtEnvironment.getEnvironment()
     private var session: OrtSession? = null
+    private var sessionOptions: OrtSession.SessionOptions? = null
     private var inputName = ""
     private var inputShape = longArrayOf(1, 640, 640, 3)
     private var inputWidth = 640
@@ -78,6 +79,10 @@ class YoloQnnDetector(
             }
         } catch (t: Throwable) {
             logger.error("QNN", "$displayName inference failed: ${t.javaClass.simpleName}: ${t.message}")
+            runCatching { active.close() }
+            runCatching { sessionOptions?.close() }
+            session = null
+            sessionOptions = null
             emptyList()
         }
     }
@@ -93,16 +98,19 @@ class YoloQnnDetector(
         try {
             Os.setenv(
                 "ADSP_LIBRARY_PATH",
-                context.applicationInfo.nativeLibraryDir + ";/vendor/lib/rfsa/adsp;/system/lib/rfsa/adsp",
+                context.applicationInfo.nativeLibraryDir +
+                    ";/vendor/lib/rfsa/adsp;/vendor/dsp/cdsp;/vendor/dsp" +
+                    ";/system/lib/rfsa/adsp;/system/vendor/lib/rfsa/adsp",
                 true
             )
         } catch (t: Throwable) {
             logger.warn("QNN", "ADSP_LIBRARY_PATH setup failed: ${t.message}")
         }
 
+        val options = OrtSession.SessionOptions()
         try {
-            val options = OrtSession.SessionOptions()
             options.addConfigEntry("ep.context_enable", "0")
+            options.addConfigEntry("session.disable_cpu_ep_fallback", "1")
             options.addQnn(
                 mapOf(
                     "backend_path" to "libQnnHtp.so",
@@ -110,7 +118,6 @@ class YoloQnnDetector(
                 )
             )
             val created = environment.createSession(model.absolutePath, options)
-            options.close()
 
             inputName = created.inputNames.first()
             val info = created.inputInfo[inputName]?.info as? TensorInfo
@@ -128,21 +135,19 @@ class YoloQnnDetector(
             }
 
             session = created
+            sessionOptions = options
             logger.info(
                 "QNN",
                 "$displayName loaded on HTP input=${inputWidth}x$inputHeight layout=${if (inputNhwc) "NHWC" else "NCHW"}"
             )
         } catch (t: Throwable) {
+            runCatching { options.close() }
             session = null
+            sessionOptions = null
             logger.warn("QNN", "$displayName HTP load failed: ${t.javaClass.simpleName}: ${t.message}")
         }
     }
 
-    /**
-     * QNN external EPContext mode requires the wrapper ONNX and its generated context .bin file(s)
-     * to remain side-by-side. Copy the complete asset directory into app-private storage before
-     * creating the ORT session so relative ep_cache_context paths still resolve correctly.
-     */
     private fun resolveModelBundle(): File? {
         val normalized = assetName.trimStart('/')
         val relativeDir = normalized.substringBeforeLast('/', "")
@@ -288,7 +293,9 @@ class YoloQnnDetector(
 
     override fun close() {
         runCatching { session?.close() }
+        runCatching { sessionOptions?.close() }
         session = null
+        sessionOptions = null
     }
 
     companion object {
