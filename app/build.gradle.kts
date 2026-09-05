@@ -10,8 +10,8 @@ android {
         applicationId = "com.ikegami99.realityscanner"
         minSdk = 28
         targetSdk = 37
-        versionCode = 5
-        versionName = "0.1.4"
+        versionCode = 6
+        versionName = "0.1.5"
 
         buildConfigField("String", "GITHUB_REPO", "\"IKEGAMI-99/REALITY-SCANNER\"")
     }
@@ -45,8 +45,6 @@ dependencies {
     implementation("androidx.camera:camera-lifecycle:$cameraX")
     implementation("androidx.camera:camera-view:$cameraX")
 
-    // QNN context binaries are generated with ORT 1.26.0 / onnxruntime-qnn 2.4.0,
-    // whose QAIRT compatibility target is 2.48.x. Keep the Android side on the same tuple.
     implementation("com.microsoft.onnxruntime:onnxruntime-android-qnn:1.26.0")
     implementation("com.qualcomm.qti:qnn-runtime:2.48.0")
 }
