@@ -110,7 +110,11 @@ class YoloQnnDetector(
         val options = OrtSession.SessionOptions()
         try {
             options.addConfigEntry("ep.context_enable", "0")
-            options.addConfigEntry("session.disable_cpu_ep_fallback", "1")
+            // External EPContext wrappers may legitimately contain small QuantizeLinear /
+            // DequantizeLinear or graph-I/O helper nodes that stay on ORT CPU while the compiled
+            // EPContext graph itself executes on QNN HTP. Disabling CPU fallback here rejects the
+            // whole session before HTP can load, which is exactly what happened on the POCO F7 Ultra.
+            options.addConfigEntry("session.disable_cpu_ep_fallback", "0")
             options.addQnn(
                 mapOf(
                     "backend_path" to "libQnnHtp.so",
@@ -134,11 +138,16 @@ class YoloQnnDetector(
                 inputWidth = inputShape[3].toInt()
             }
 
+            require(inputWidth > 0 && inputHeight > 0) {
+                "dynamic/invalid input shape ${inputShape.toList()}"
+            }
+
             session = created
             sessionOptions = options
             logger.info(
                 "QNN",
-                "$displayName loaded on HTP input=${inputWidth}x$inputHeight layout=${if (inputNhwc) "NHWC" else "NCHW"}"
+                "$displayName EPContext loaded // HTP graph active // CPU helper nodes allowed // " +
+                    "input=${inputWidth}x$inputHeight layout=${if (inputNhwc) "NHWC" else "NCHW"}"
             )
         } catch (t: Throwable) {
             runCatching { options.close() }
