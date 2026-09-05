@@ -19,6 +19,7 @@ import androidx.core.view.ViewCompat
 import androidx.core.view.WindowInsetsCompat
 import com.ikegami99.realityscanner.camera.CameraController
 import com.ikegami99.realityscanner.detection.DetectorCascade
+import com.ikegami99.realityscanner.detection.YoloFastOnnxDetector
 import com.ikegami99.realityscanner.detection.YoloOnnxDetector
 import com.ikegami99.realityscanner.detection.YoloQnnDetector
 import com.ikegami99.realityscanner.logging.AppLogger
@@ -83,9 +84,6 @@ class MainActivity : ComponentActivity() {
             setBackgroundColor(bgColor)
         }
 
-        // Android 15+ enforces edge-to-edge for modern targets. Keep the tactical header and
-        // terminal controls inside the real status/navigation bar safe area instead of drawing
-        // underneath the clock, camera cutout or gesture bar.
         ViewCompat.setOnApplyWindowInsetsListener(root) { view, insets ->
             val systemBars = insets.getInsets(WindowInsetsCompat.Type.systemBars())
             val cutout = insets.getInsets(WindowInsetsCompat.Type.displayCutout())
@@ -147,13 +145,15 @@ class MainActivity : ComponentActivity() {
             runOnUiThread { terminal.append(entry) }
         }
 
-        // Prefer the Snapdragon Hexagon NPU. The small QNN models keep live boxes responsive;
-        // the large YOLO26x ONNX remains the final compatibility fallback if QNN is unavailable.
+        // QNN/HTP is the preferred live path. If the vendor firmware rejects the context binary,
+        // fall back to the 640px nano detector on XNNPACK before ever considering YOLO26x/960.
+        // This guarantees that a failed NPU probe does not recreate the ~3.8 s/frame behavior.
         val detector = DetectorCascade(
             logger,
             listOf(
                 YoloQnnDetector(applicationContext, logger, "yolo26s_v79_qnn.onnx", "YOLO26S-QNN"),
                 YoloQnnDetector(applicationContext, logger, "yolo26n_v79_qnn.onnx", "YOLO26N-QNN"),
+                YoloFastOnnxDetector(applicationContext, logger, "yolo26n.onnx", "YOLO26N-XNN"),
                 YoloOnnxDetector(applicationContext, logger)
             )
         )
@@ -172,6 +172,7 @@ class MainActivity : ComponentActivity() {
         logger.info("SYSTEM", "boot sequence start")
         logger.info("SYSTEM", "device=${android.os.Build.MANUFACTURER} ${android.os.Build.MODEL}")
         logger.info("SYSTEM", "offline hybrid inference pipeline ready")
+        logger.info("MODEL", "priority=QNN-S > QNN-N > XNN-N > XNN-X")
 
         ensureCamera()
         checkUpdate(manual = false)
