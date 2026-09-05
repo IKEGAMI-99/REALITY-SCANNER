@@ -27,8 +27,6 @@ class CameraController(
     private val hud: HudOverlayView,
     private val logger: AppLogger
 ) {
-    // Camera analysis must never wait for YOLO. The analyzer stays light and continuously drops
-    // frames into the live preview/HUD path while a second worker owns the expensive inference.
     private val analysisExecutor: ExecutorService = Executors.newSingleThreadExecutor()
     private val inferenceExecutor: ExecutorService = Executors.newSingleThreadExecutor()
     private val inferenceRunning = AtomicBoolean(false)
@@ -87,8 +85,9 @@ class CameraController(
         val now = System.nanoTime()
         updateCameraFps(now)
         val luma = calculateLuma(image)
-        val lowLight = luma < 48f
 
+        // Hysteresis prevents AUTO from flipping ACTIVE/STANDBY every frame around one threshold.
+        val lowLight = if (lastLowLight) luma < LOW_LIGHT_EXIT_LUMA else luma < LOW_LIGHT_ENTER_LUMA
         if (lowLight != lastLowLight) {
             lastLowLight = lowLight
             logger.info(
@@ -99,7 +98,6 @@ class CameraController(
             applyExposureAssist(lowLight)
         }
 
-        // Keep the status panel alive at camera cadence even if YOLO is taking several seconds.
         publishHud()
 
         val inferDue = now - lastInferenceNanos >= INFERENCE_INTERVAL_NANOS
@@ -113,8 +111,6 @@ class CameraController(
         val rotationDegrees = image.imageInfo.rotationDegrees
         val lowLightGain = if (lowLight) 1.45f else 1f
 
-        // Copy only the occasional inference frame. Release ImageProxy immediately afterward so
-        // CameraX can continue delivering ~30 analysis frames/s while YOLO works in parallel.
         val bitmap = try {
             image.toBitmap()
         } catch (t: Throwable) {
@@ -135,26 +131,21 @@ class CameraController(
                 )
 
                 val completed = System.nanoTime()
-                // Important: detections belong to the source frame, not the completion time.
-                // Keeping this timestamp lets the HUD extrapolate the boxes forward while the
-                // neural net was busy instead of snapping several seconds into the past.
                 val tracks = trackManager.update(detections, sourceFrameNanos)
                 lastInferenceMs = (completed - started) / 1_000_000f
                 updateAiFps(completed)
 
-                if (detections.isNotEmpty()) {
+                logger.info(
+                    "YOLO",
+                    "objects=${detections.size} tracks=${tracks.size} " +
+                        "infer=${"%.1f".format(lastInferenceMs)}ms backend=${detector.backendName}"
+                )
+                tracks.take(4).forEach {
                     logger.info(
-                        "YOLO",
-                        "objects=${detections.size} tracks=${tracks.size} " +
-                            "infer=${"%.1f".format(lastInferenceMs)}ms backend=${detector.backendName}"
+                        "VECTOR",
+                        "#${it.id} ${it.label} rel=${"%.3f".format(it.relativeSpeed)}/s " +
+                            "vx=${"%.3f".format(it.velocityX)} vy=${"%.3f".format(it.velocityY)}"
                     )
-                    tracks.take(4).forEach {
-                        logger.info(
-                            "VECTOR",
-                            "#${it.id} ${it.label} rel=${"%.3f".format(it.relativeSpeed)}/s " +
-                                "vx=${"%.3f".format(it.velocityX)} vy=${"%.3f".format(it.velocityY)}"
-                        )
-                    }
                 }
 
                 previewView.post {
@@ -244,6 +235,9 @@ class CameraController(
     }
 
     companion object {
-        private const val INFERENCE_INTERVAL_NANOS = 120_000_000L
+        // QNN can run far faster than the old XNNPACK path, so don't artificially cap it at ~8 FPS.
+        private const val INFERENCE_INTERVAL_NANOS = 40_000_000L
+        private const val LOW_LIGHT_ENTER_LUMA = 45f
+        private const val LOW_LIGHT_EXIT_LUMA = 55f
     }
 }
