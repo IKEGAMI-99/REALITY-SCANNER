@@ -46,6 +46,11 @@ class CameraController(
     private var aiWindowStart = System.nanoTime()
 
     fun start() {
+        frameCounter = 0
+        inferenceCount = 0
+        fpsWindowStart = System.nanoTime()
+        aiWindowStart = System.nanoTime()
+
         val future = ProcessCameraProvider.getInstance(previewView.context)
         future.addListener({
             try {
@@ -79,6 +84,14 @@ class CameraController(
                 logger.error("CAMERA", "start failed: ${t.javaClass.simpleName}: ${t.message}")
             }
         }, ContextCompat.getMainExecutor(previewView.context))
+    }
+
+    fun pause() {
+        cameraProvider?.unbindAll()
+        camera = null
+        cameraFps = 0f
+        aiFps = 0f
+        logger.info("CAMERA", "preview paused // detector retained")
     }
 
     private fun analyze(image: ImageProxy) {
@@ -229,6 +242,7 @@ class CameraController(
 
     fun stop() {
         cameraProvider?.unbindAll()
+        camera = null
         analysisExecutor.shutdownNow()
         inferenceExecutor.shutdownNow()
         detector.close()
