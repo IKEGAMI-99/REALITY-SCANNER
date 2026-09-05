@@ -104,7 +104,8 @@ class HudOverlayView @JvmOverloads constructor(
 
     private fun drawTrack(canvas: Canvas, track: TrackSnapshot, now: Long) {
         val ageSeconds = ((now - track.lastSeenNanos) / 1_000_000_000f).coerceAtLeast(0f)
-        val dt = ageSeconds.coerceAtMost(MAX_EXTRAPOLATION_SECONDS)
+        val moving = track.relativeSpeed >= MIN_VISUAL_SPEED
+        val dt = if (moving) ageSeconds.coerceAtMost(MAX_EXTRAPOLATION_SECONDS) else 0f
         val dx = track.velocityX * dt
         val dy = track.velocityY * dt
 
@@ -123,7 +124,7 @@ class HudOverlayView @JvmOverloads constructor(
         val label = "${track.label.uppercase()} #${track.id.toString().padStart(4, '0')}"
         val predictionFlag = when {
             stale -> " HOLD"
-            ageSeconds > 0.15f -> " PRED"
+            moving && ageSeconds > 0.08f -> " PRED"
             else -> ""
         }
         val metrics = "CONF %.1f%%  REL %.3f/s%s".format(
@@ -143,7 +144,7 @@ class HudOverlayView @JvmOverloads constructor(
         val cy = rect.centerY()
         canvas.drawCircle(cx, cy, 4f, linePaint)
 
-        if (!stale) {
+        if (!stale && moving) {
             val targetX = cx + track.velocityX * width * VECTOR_LOOKAHEAD_SECONDS
             val targetY = cy + track.velocityY * height * VECTOR_LOOKAHEAD_SECONDS
             canvas.drawLine(cx, cy, targetX, targetY, linePaint)
@@ -177,8 +178,9 @@ class HudOverlayView @JvmOverloads constructor(
     }
 
     companion object {
-        private const val MAX_EXTRAPOLATION_SECONDS = 0.60f
-        private const val STALE_SECONDS = 0.65f
-        private const val VECTOR_LOOKAHEAD_SECONDS = 0.50f
+        private const val MAX_EXTRAPOLATION_SECONDS = 0.18f
+        private const val STALE_SECONDS = 0.24f
+        private const val VECTOR_LOOKAHEAD_SECONDS = 0.35f
+        private const val MIN_VISUAL_SPEED = 0.025f
     }
 }
