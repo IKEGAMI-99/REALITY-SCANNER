@@ -4,11 +4,13 @@ Android向けの完全ローカルAIリアルタイム物体認識HUDです。
 
 ## APKダウンロード
 
-**YOLO26x内蔵フル版:**
+**YOLO26x内蔵フル版 v0.1.1:**
 
-[REALITY-SCANNER-v0.1.0-FULL-YOLO26x.apk をダウンロード](https://github.com/IKEGAMI-99/REALITY-SCANNER/releases/download/v0.1.0/REALITY-SCANNER-v0.1.0-FULL-YOLO26x.apk)
+[REALITY-SCANNER-v0.1.1-FULL-YOLO26x.apk をダウンロード](https://github.com/IKEGAMI-99/REALITY-SCANNER/releases/download/v0.1.1/REALITY-SCANNER-v0.1.1-FULL-YOLO26x.apk)
 
 > 約300MB。YOLO26xモデルをAPK内に含むため、別途モデルファイルを用意する必要はありません。
+>
+> v0.1.0は一時的なdebug署名で作成されていたため、v0.1.1への移行時だけ一度v0.1.0をアンインストールしてからインストールしてください。v0.1.1以降は固定署名を使用します。
 
 黒背景＋グリーンのCLI/タクティカルUIで、画面上部を正方形カメラ、下部を実処理ログが流れるライブターミナルとして構成しています。
 
@@ -18,7 +20,7 @@ Android向けの完全ローカルAIリアルタイム物体認識HUDです。
 - 正方形カメラ表示
 - 30fps以上のプレビューをAI推論から分離
 - ONNX RuntimeベースのYOLO検出エンジン
-- NNAPI優先、CPUフォールバック
+- NNAPI優先、NNAPIがモデルを拒否した場合はCPUへ自動フォールバック
 - COCO 80クラス
 - Track ID
 - BBoxコーナーHUD
@@ -33,6 +35,12 @@ Android向けの完全ローカルAIリアルタイム物体認識HUDです。
 - GitHub Releasesのアプリ内更新確認
 - APKダウンロード＋インストーラ起動
 - GitHub ActionsによるAndroidビルド
+
+## v0.1.1 修正
+
+POCO F7 Ultra上でYOLO26xをNNAPIへロードした際に、ONNX Runtimeが`AddNnapiSplit count [0] does not evenly divide dimension`で失敗する問題へ対応しました。
+
+NNAPIセッション作成に失敗した場合、モデルロード全体を失敗扱いにせず、CPU Execution Providerでセッションを自動再生成します。ターミナルには`NNAPI FAILED -> CPU FALLBACK`と表示されます。
 
 ## AIモデル
 
@@ -106,12 +114,7 @@ gradle :app:assembleDebug
 
 GitHub Releasesの`latest`を確認し、Release Assets内の最初の`.apk`を更新APKとして扱います。
 
-リリース例:
-
-```text
-Tag: v0.2.0
-Asset: reality-scanner-v0.2.0.apk
-```
+v0.1.1以降は固定debug署名を使用するため、以降のビルドは同じ署名を維持できます。
 
 Androidの仕様上、初回は「不明なアプリのインストール」の許可が必要です。勝手にインストールすることはありません。
 
