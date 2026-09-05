@@ -25,9 +25,11 @@ class TerminalView @JvmOverloads constructor(
     private val output = TextView(context)
     private val lines = ArrayDeque<String>()
     private var paused = false
+    private lateinit var demoButton: TextView
 
     var onExport: (() -> Unit)? = null
     var onUpdate: (() -> Unit)? = null
+    var onDemo: (() -> Unit)? = null
 
     init {
         orientation = VERTICAL
@@ -85,11 +87,13 @@ class TerminalView @JvmOverloads constructor(
             lines.clear()
             output.text = "> _"
         }
+        demoButton = cliButton("[ DEMO ]") { onDemo?.invoke() }
         val export = cliButton("[ EXPORT ]") { onExport?.invoke() }
         val update = cliButton("[ UPDATE ]") { onUpdate?.invoke() }
 
         controls.addView(pause, LinearLayout.LayoutParams(0, dp(36), 1f))
         controls.addView(clear, LinearLayout.LayoutParams(0, dp(36), 1f))
+        controls.addView(demoButton, LinearLayout.LayoutParams(0, dp(36), 1f))
         controls.addView(export, LinearLayout.LayoutParams(0, dp(36), 1f))
         controls.addView(update, LinearLayout.LayoutParams(0, dp(36), 1f))
         addView(
@@ -99,6 +103,12 @@ class TerminalView @JvmOverloads constructor(
                 LinearLayout.LayoutParams.WRAP_CONTENT
             )
         )
+    }
+
+    fun setDemoActive(active: Boolean) {
+        if (::demoButton.isInitialized) {
+            demoButton.text = if (active) "[ CAMERA ]" else "[ DEMO ]"
+        }
     }
 
     fun append(entry: AppLogger.Entry) {
@@ -118,7 +128,7 @@ class TerminalView @JvmOverloads constructor(
             text = textValue
             gravity = Gravity.CENTER
             setTextColor(green)
-            textSize = 10f
+            textSize = 8.8f
             typeface = Typeface.MONOSPACE
             background = GradientDrawable().apply {
                 setColor(bgColor)
