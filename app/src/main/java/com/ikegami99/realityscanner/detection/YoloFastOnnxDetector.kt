@@ -25,8 +25,10 @@ class YoloFastOnnxDetector(
     private var session: OrtSession? = null
     private var options: OrtSession.SessionOptions? = null
     private var inputName = ""
+    private var inputShape = longArrayOf(1, 3, 640, 640)
     private var inputWidth = 640
     private var inputHeight = 640
+    private var inputNhwc = false
     private var attemptedLoad = false
     private var activeBackend = "PROBE"
 
@@ -48,11 +50,20 @@ class YoloFastOnnxDetector(
 
         val planeSize = inputWidth * inputHeight
         val input = FloatArray(planeSize * 3)
-        for (i in pixels.indices) {
-            val color = pixels[i]
-            input[i] = ((((color shr 16) and 0xFF) / 255f) * lowLightGain).coerceAtMost(1f)
-            input[planeSize + i] = ((((color shr 8) and 0xFF) / 255f) * lowLightGain).coerceAtMost(1f)
-            input[planeSize * 2 + i] = (((color and 0xFF) / 255f) * lowLightGain).coerceAtMost(1f)
+        if (inputNhwc) {
+            var dst = 0
+            for (color in pixels) {
+                input[dst++] = ((((color shr 16) and 0xFF) / 255f) * lowLightGain).coerceAtMost(1f)
+                input[dst++] = ((((color shr 8) and 0xFF) / 255f) * lowLightGain).coerceAtMost(1f)
+                input[dst++] = (((color and 0xFF) / 255f) * lowLightGain).coerceAtMost(1f)
+            }
+        } else {
+            for (i in pixels.indices) {
+                val color = pixels[i]
+                input[i] = ((((color shr 16) and 0xFF) / 255f) * lowLightGain).coerceAtMost(1f)
+                input[planeSize + i] = ((((color shr 8) and 0xFF) / 255f) * lowLightGain).coerceAtMost(1f)
+                input[planeSize * 2 + i] = (((color and 0xFF) / 255f) * lowLightGain).coerceAtMost(1f)
+            }
         }
 
         if (rotated !== bitmap) rotated.recycle()
@@ -60,11 +71,7 @@ class YoloFastOnnxDetector(
         if (resized !== square) resized.recycle()
 
         return try {
-            OnnxTensor.createTensor(
-                environment,
-                FloatBuffer.wrap(input),
-                longArrayOf(1, 3, inputHeight.toLong(), inputWidth.toLong())
-            ).use { tensor ->
+            OnnxTensor.createTensor(environment, FloatBuffer.wrap(input), inputShape).use { tensor ->
                 active.run(mapOf(inputName to tensor)).use { result ->
                     parseOutput(result[0].value)
                 }
@@ -120,15 +127,33 @@ class YoloFastOnnxDetector(
     ) {
         inputName = created.inputNames.first()
         val info = created.inputInfo[inputName]?.info as? TensorInfo
-        val shape = info?.shape
-        if (shape != null && shape.size >= 4) {
-            if (shape[2] > 0) inputHeight = shape[2].toInt()
-            if (shape[3] > 0) inputWidth = shape[3].toInt()
+        val shape = info?.shape ?: throw IllegalStateException("missing input tensor shape")
+        require(shape.size == 4) { "unexpected input shape ${shape.toList()}" }
+
+        inputShape = shape.clone()
+        when {
+            shape[1] == 3L -> {
+                inputNhwc = false
+                inputHeight = shape[2].toInt()
+                inputWidth = shape[3].toInt()
+            }
+            shape[3] == 3L -> {
+                inputNhwc = true
+                inputHeight = shape[1].toInt()
+                inputWidth = shape[2].toInt()
+            }
+            else -> throw IllegalStateException("unsupported input layout ${shape.toList()}")
         }
+        require(inputWidth > 0 && inputHeight > 0) { "dynamic/invalid input shape ${shape.toList()}" }
+
         session = created
         options = newOptions
         activeBackend = backend
-        logger.info("FAST", "$backendName loaded input=${inputWidth}x$inputHeight threads=$threads")
+        logger.info(
+            "FAST",
+            "$backendName loaded input=${inputWidth}x$inputHeight " +
+                "layout=${if (inputNhwc) "NHWC" else "NCHW"} shape=${inputShape.toList()} threads=$threads"
+        )
     }
 
     private fun resolveModel(): File? {
