@@ -28,6 +28,7 @@ import com.ikegami99.realityscanner.ui.HudOverlayView
 import com.ikegami99.realityscanner.ui.SquareFrameLayout
 import com.ikegami99.realityscanner.ui.TerminalView
 import com.ikegami99.realityscanner.update.AppUpdater
+import java.io.IOException
 import java.text.SimpleDateFormat
 import java.util.Date
 import java.util.Locale
@@ -60,16 +61,50 @@ class MainActivity : ComponentActivity() {
     ) { uri ->
         val data = pendingExport
         pendingExport = null
-        if (uri != null && data != null) {
-            runCatching {
-                contentResolver.openOutputStream(uri)?.use {
-                    it.write(data.toByteArray(Charsets.UTF_8))
-                }
-            }.onSuccess {
-                logger.info("LOG", "export completed")
-            }.onFailure {
-                logger.error("LOG", "export failed: ${it.message}")
+
+        if (uri == null) {
+            logger.warn("LOG", "export cancelled")
+            return@registerForActivityResult
+        }
+        if (data == null) {
+            logger.error("LOG", "export failed: no prepared payload")
+            return@registerForActivityResult
+        }
+
+        val bytes = data.toByteArray(Charsets.UTF_8)
+        if (bytes.isEmpty()) {
+            logger.error("LOG", "export failed: payload is 0 bytes")
+            return@registerForActivityResult
+        }
+
+        runCatching {
+            val stream = contentResolver.openOutputStream(uri, "w")
+                ?: throw IOException("ContentResolver returned a null output stream")
+            stream.buffered().use { output ->
+                output.write(bytes)
+                output.flush()
             }
+
+            // Some document providers can create the destination file successfully but fail to
+            // persist the payload. Treat a provider-reported 0-byte file as a real failure instead
+            // of displaying the old false-positive "export completed" message.
+            val providerSize = runCatching {
+                contentResolver.openFileDescriptor(uri, "r")?.use { it.statSize }
+            }.getOrNull()
+            if (providerSize == 0L) {
+                throw IOException("document provider reported 0 bytes after write")
+            }
+
+            providerSize
+        }.onSuccess { providerSize ->
+            val verified = if (providerSize != null && providerSize >= 0L) {
+                " providerBytes=$providerSize"
+            } else {
+                ""
+            }
+            logger.info("LOG", "export completed bytes=${bytes.size}$verified")
+        }.onFailure {
+            logger.error("LOG", "export failed: ${it.javaClass.simpleName}: ${it.message}")
         }
     }
 
@@ -147,7 +182,6 @@ class MainActivity : ComponentActivity() {
 
         // QNN/HTP is the preferred live path. If the vendor firmware rejects the context binary,
         // fall back to the 640px nano detector on XNNPACK before ever considering YOLO26x/960.
-        // This guarantees that a failed NPU probe does not recreate the ~3.8 s/frame behavior.
         val detector = DetectorCascade(
             logger,
             listOf(
@@ -189,7 +223,14 @@ class MainActivity : ComponentActivity() {
     }
 
     private fun exportLogs() {
-        pendingExport = logger.exportJson()
+        val payload = logger.exportJson()
+        val byteCount = payload.toByteArray(Charsets.UTF_8).size
+        if (byteCount == 0) {
+            logger.error("LOG", "export preparation failed: generated payload is empty")
+            return
+        }
+        pendingExport = payload
+        logger.info("LOG", "export prepared bytes=$byteCount")
         val stamp = SimpleDateFormat("yyyyMMdd_HHmmss", Locale.US).format(Date())
         exportDocument.launch("reality_scanner_log_$stamp.json")
         logger.info("LOG", "export UI opened")
