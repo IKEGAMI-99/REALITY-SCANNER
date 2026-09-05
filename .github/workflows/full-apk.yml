@@ -49,7 +49,6 @@ jobs:
       - name: Install pinned YOLO and QNN export toolchain
         run: |
           python -m pip install ultralytics onnx onnxslim
-          # Keep AOT context generation ABI-aligned with the Android runtime.
           python -m pip install "onnxruntime==1.26.0" "onnxruntime-qnn==2.4.0"
           python - <<'PY'
           import onnxruntime as ort
@@ -65,41 +64,53 @@ jobs:
           mkdir -p app/src/main/assets/models
           mv yolo26x.onnx app/src/main/assets/models/yolo26x.onnx
 
-      - name: Export Snapdragon HTP QNN live models
+      - name: Export Snapdragon HTP QNN external context bundles
         run: |
           python scripts/export_yolo26_qnn.py
-          test -s yolo26s_v79_qnn.onnx
-          test -s yolo26n_v79_qnn.onnx
+          test -s qnn_s_bundle/model.onnx
+          test -s qnn_n_bundle/model.onnx
+          test "$(find qnn_s_bundle -maxdepth 1 -name '*.bin' -type f -size +0c | wc -l)" -gt 0
+          test "$(find qnn_n_bundle -maxdepth 1 -name '*.bin' -type f -size +0c | wc -l)" -gt 0
           test -s yolo26n.onnx
-          mv yolo26s_v79_qnn.onnx app/src/main/assets/models/yolo26s_v79_qnn.onnx
-          mv yolo26n_v79_qnn.onnx app/src/main/assets/models/yolo26n_v79_qnn.onnx
-          # Fast CPU/XNNPACK escape hatch if HTP initialization is unavailable on a vendor build.
+
+          rm -rf app/src/main/assets/models/qnn_s app/src/main/assets/models/qnn_n
+          mkdir -p app/src/main/assets/models/qnn_s app/src/main/assets/models/qnn_n
+          cp -a qnn_s_bundle/. app/src/main/assets/models/qnn_s/
+          cp -a qnn_n_bundle/. app/src/main/assets/models/qnn_n/
+
+          # Fast XNNPACK fallback if the vendor QNN stack still refuses the precompiled context.
           cp yolo26n.onnx app/src/main/assets/models/yolo26n.onnx
-          ls -lh app/src/main/assets/models/
+
+          echo "QNN-S bundle:"
+          ls -lh app/src/main/assets/models/qnn_s/
+          echo "QNN-N bundle:"
+          ls -lh app/src/main/assets/models/qnn_n/
+          echo "All models:"
+          du -ah app/src/main/assets/models/ | sort -h | tail -30
 
       - name: Build full debug APK
         run: gradle :app:assembleDebug --stacktrace
 
       - name: Rename APK
         run: |
-          cp app/build/outputs/apk/debug/app-debug.apk REALITY-SCANNER-v0.1.4-QNN-FIX.apk
-          test -s REALITY-SCANNER-v0.1.4-QNN-FIX.apk
-          ls -lh REALITY-SCANNER-v0.1.4-QNN-FIX.apk
+          cp app/build/outputs/apk/debug/app-debug.apk REALITY-SCANNER-v0.1.5-QNN-EXTERNAL.apk
+          test -s REALITY-SCANNER-v0.1.5-QNN-EXTERNAL.apk
+          ls -lh REALITY-SCANNER-v0.1.5-QNN-EXTERNAL.apk
 
       - uses: actions/upload-artifact@v4
         with:
-          name: reality-scanner-qnn-fix-v0.1.4
-          path: REALITY-SCANNER-v0.1.4-QNN-FIX.apk
+          name: reality-scanner-qnn-external-v0.1.5
+          path: REALITY-SCANNER-v0.1.5-QNN-EXTERNAL.apk
           retention-days: 30
 
       - name: Publish GitHub Release APK
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
-          if gh release view v0.1.4 >/dev/null 2>&1; then
-            gh release upload v0.1.4 REALITY-SCANNER-v0.1.4-QNN-FIX.apk --clobber
+          if gh release view v0.1.5 >/dev/null 2>&1; then
+            gh release upload v0.1.5 REALITY-SCANNER-v0.1.5-QNN-EXTERNAL.apk --clobber
           else
-            gh release create v0.1.4 REALITY-SCANNER-v0.1.4-QNN-FIX.apk \
-              --title "REALITY SCANNER v0.1.4" \
-              --notes "QNN compatibility fix: pins AOT export to ORT 1.26.0 + onnxruntime-qnn 2.4.0 / QAIRT 2.48.x to match the Android runtime. Adds YOLO26n 640 XNNPACK fallback so a failed HTP probe no longer drops straight to YOLO26x/960 at ~4 seconds per frame."
+            gh release create v0.1.5 REALITY-SCANNER-v0.1.5-QNN-EXTERNAL.apk \
+              --title "REALITY SCANNER v0.1.5" \
+              --notes "Fixes 0-byte JSON log exports with real write/size verification. Rebuilds Snapdragon QNN models using external EPContext binaries (wrapper ONNX + companion .bin) to avoid the embedded EPContext loading failure seen on the POCO F7 Ultra. Keeps YOLO26n/640 XNNPACK as the fast fallback."
           fi
