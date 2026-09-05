@@ -85,7 +85,7 @@ class YoloQnnDetector(
     private fun ensureLoaded() {
         if (attemptedLoad) return
         attemptedLoad = true
-        val model = resolveModel() ?: run {
+        val model = resolveModelBundle() ?: run {
             logger.warn("QNN", "$assetName missing")
             return
         }
@@ -102,6 +102,7 @@ class YoloQnnDetector(
 
         try {
             val options = OrtSession.SessionOptions()
+            options.addConfigEntry("ep.context_enable", "0")
             options.addQnn(
                 mapOf(
                     "backend_path" to "libQnnHtp.so",
@@ -137,16 +138,42 @@ class YoloQnnDetector(
         }
     }
 
-    private fun resolveModel(): File? {
-        val privateModel = File(context.filesDir, "models/$assetName")
-        if (privateModel.exists() && privateModel.length() > 0L) return privateModel
+    /**
+     * QNN external EPContext mode requires the wrapper ONNX and its generated context .bin file(s)
+     * to remain side-by-side. Copy the complete asset directory into app-private storage before
+     * creating the ORT session so relative ep_cache_context paths still resolve correctly.
+     */
+    private fun resolveModelBundle(): File? {
+        val normalized = assetName.trimStart('/')
+        val relativeDir = normalized.substringBeforeLast('/', "")
+        val fileName = normalized.substringAfterLast('/')
+        val assetDir = if (relativeDir.isBlank()) "models" else "models/$relativeDir"
+        val privateDir = if (relativeDir.isBlank()) {
+            File(context.filesDir, "models")
+        } else {
+            File(context.filesDir, "models/$relativeDir")
+        }
+        val privateModel = File(privateDir, fileName)
+
         return try {
-            context.assets.open("models/$assetName").use { input ->
-                privateModel.parentFile?.mkdirs()
-                FileOutputStream(privateModel).use { output -> input.copyTo(output) }
+            privateDir.mkdirs()
+            val entries = context.assets.list(assetDir)?.toList().orEmpty()
+            if (entries.isEmpty()) return null
+
+            entries.forEach { name ->
+                val assetPath = "$assetDir/$name"
+                val target = File(privateDir, name)
+                context.assets.open(assetPath).use { input ->
+                    FileOutputStream(target, false).use { output -> input.copyTo(output) }
+                }
+                if (target.length() <= 0L) {
+                    throw IllegalStateException("copied QNN asset is empty: $assetPath")
+                }
             }
-            privateModel
-        } catch (_: Throwable) {
+
+            if (!privateModel.exists() || privateModel.length() <= 0L) null else privateModel
+        } catch (t: Throwable) {
+            logger.warn("QNN", "bundle copy failed for $assetDir: ${t.javaClass.simpleName}: ${t.message}")
             null
         }
     }
