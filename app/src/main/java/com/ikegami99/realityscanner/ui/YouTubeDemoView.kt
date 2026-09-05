@@ -7,7 +7,10 @@ import android.net.Uri
 import android.util.AttributeSet
 import android.view.View
 import android.webkit.CookieManager
+import android.webkit.JavascriptInterface
 import android.webkit.WebChromeClient
+import android.webkit.WebResourceError
+import android.webkit.WebResourceRequest
 import android.webkit.WebView
 import android.webkit.WebViewClient
 
@@ -19,12 +22,14 @@ class YouTubeDemoView @JvmOverloads constructor(
     var onVideoLoaded: ((String) -> Unit)? = null
     var onVideoError: ((String) -> Unit)? = null
 
+    private var currentVideoId: String? = null
+
     init {
         configure()
         visibility = View.GONE
     }
 
-    @SuppressLint("SetJavaScriptEnabled")
+    @SuppressLint("SetJavaScriptEnabled", "AddJavascriptInterface")
     private fun configure() {
         setBackgroundColor(Color.BLACK)
         isVerticalScrollBarEnabled = false
@@ -43,10 +48,20 @@ class YouTubeDemoView @JvmOverloads constructor(
         CookieManager.getInstance().setAcceptCookie(true)
         CookieManager.getInstance().setAcceptThirdPartyCookies(this, true)
 
+        addJavascriptInterface(PlayerBridge(), "RealityScanner")
         webChromeClient = WebChromeClient()
         webViewClient = object : WebViewClient() {
-            override fun onPageFinished(view: WebView?, url: String?) {
-                super.onPageFinished(view, url)
+            override fun onReceivedError(
+                view: WebView?,
+                request: WebResourceRequest?,
+                error: WebResourceError?
+            ) {
+                super.onReceivedError(view, request, error)
+                if (request?.isForMainFrame == true) {
+                    onVideoError?.invoke(
+                        "YouTube page load failed: ${error?.errorCode} ${error?.description ?: "unknown"}"
+                    )
+                }
             }
         }
     }
@@ -58,20 +73,21 @@ class YouTubeDemoView @JvmOverloads constructor(
             return false
         }
 
-        val html = buildHtml(videoId)
+        currentVideoId = videoId
         visibility = View.VISIBLE
         loadDataWithBaseURL(
-            "https://www.youtube.com/",
-            html,
+            APP_ORIGIN,
+            buildHtml(videoId),
             "text/html",
             "UTF-8",
             null
         )
-        onVideoLoaded?.invoke(videoId)
         return true
     }
 
     fun stopPlayback() {
+        currentVideoId = null
+        runCatching { evaluateJavascript("if(window.player){try{player.stopVideo();}catch(e){}}", null) }
         runCatching { loadUrl("about:blank") }
         visibility = View.GONE
     }
@@ -84,11 +100,42 @@ class YouTubeDemoView @JvmOverloads constructor(
         destroy()
     }
 
+    private inner class PlayerBridge {
+        @JavascriptInterface
+        fun ready() {
+            val id = currentVideoId ?: return
+            post { onVideoLoaded?.invoke(id) }
+        }
+
+        @JavascriptInterface
+        fun error(code: Int) {
+            val detail = when (code) {
+                2 -> "invalid video ID / parameter"
+                5 -> "HTML5 player error"
+                100 -> "video not found, removed, or private"
+                101, 150 -> "video owner disabled embedded playback"
+                153 -> "YouTube rejected embed identity / HTTP Referer"
+                else -> "unknown player error"
+            }
+            post { onVideoError?.invoke("YouTube player error $code // $detail") }
+        }
+
+        @JavascriptInterface
+        fun autoplayBlocked() {
+            post {
+                onVideoError?.invoke(
+                    "YouTube autoplay blocked // tap the player once to start playback"
+                )
+            }
+        }
+    }
+
     private fun buildHtml(videoId: String): String = """
         <!doctype html>
         <html>
         <head>
           <meta name="viewport" content="width=device-width,initial-scale=1,maximum-scale=1,user-scalable=no" />
+          <meta name="referrer" content="origin" />
           <style>
             html, body {
               margin: 0;
@@ -119,12 +166,32 @@ class YouTubeDemoView @JvmOverloads constructor(
           <div id="crop">
             <iframe
               id="player"
-              src="https://www.youtube.com/embed/$videoId?autoplay=1&playsinline=1&rel=0&modestbranding=1&controls=1&enablejsapi=1"
+              src="https://www.youtube.com/embed/$videoId?autoplay=1&playsinline=1&rel=0&controls=1&enablejsapi=1&origin=$APP_ORIGIN_ENCODED"
               title="YouTube demo"
+              referrerpolicy="origin"
               allow="autoplay; encrypted-media; picture-in-picture"
               allowfullscreen>
             </iframe>
           </div>
+          <script src="https://www.youtube.com/iframe_api"></script>
+          <script>
+            var player = null;
+            function onYouTubeIframeAPIReady() {
+              player = new YT.Player('player', {
+                events: {
+                  'onReady': function(e) {
+                    if (window.RealityScanner) RealityScanner.ready();
+                  },
+                  'onError': function(e) {
+                    if (window.RealityScanner) RealityScanner.error(Number(e.data));
+                  },
+                  'onAutoplayBlocked': function() {
+                    if (window.RealityScanner) RealityScanner.autoplayBlocked();
+                  }
+                }
+              });
+            }
+          </script>
         </body>
         </html>
     """.trimIndent()
@@ -154,6 +221,8 @@ class YouTubeDemoView @JvmOverloads constructor(
     }
 
     companion object {
+        private const val APP_ORIGIN = "https://reality-scanner.app/"
+        private const val APP_ORIGIN_ENCODED = "https%3A%2F%2Freality-scanner.app"
         private val VIDEO_ID = Regex("^[A-Za-z0-9_-]{11}$")
     }
 }
