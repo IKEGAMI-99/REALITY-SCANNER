@@ -23,6 +23,7 @@ class YouTubeDemoView @JvmOverloads constructor(
     var onVideoError: ((String) -> Unit)? = null
 
     private var currentVideoId: String? = null
+    private var directFallbackActive = false
 
     init {
         configure()
@@ -51,6 +52,13 @@ class YouTubeDemoView @JvmOverloads constructor(
         addJavascriptInterface(PlayerBridge(), "RealityScanner")
         webChromeClient = WebChromeClient()
         webViewClient = object : WebViewClient() {
+            override fun onPageFinished(view: WebView?, url: String?) {
+                super.onPageFinished(view, url)
+                if (directFallbackActive && url?.contains("youtube.com/embed/") == true) {
+                    currentVideoId?.let { id -> onVideoLoaded?.invoke("$id // direct-fallback") }
+                }
+            }
+
             override fun onReceivedError(
                 view: WebView?,
                 request: WebResourceRequest?,
@@ -74,6 +82,9 @@ class YouTubeDemoView @JvmOverloads constructor(
         }
 
         currentVideoId = videoId
+        directFallbackActive = false
+        scaleX = 1f
+        scaleY = 1f
         visibility = View.VISIBLE
         loadDataWithBaseURL(
             APP_ORIGIN,
@@ -87,6 +98,9 @@ class YouTubeDemoView @JvmOverloads constructor(
 
     fun stopPlayback() {
         currentVideoId = null
+        directFallbackActive = false
+        scaleX = 1f
+        scaleY = 1f
         runCatching { evaluateJavascript("if(window.player){try{player.stopVideo();}catch(e){}}", null) }
         runCatching { loadUrl("about:blank") }
         visibility = View.GONE
@@ -100,6 +114,28 @@ class YouTubeDemoView @JvmOverloads constructor(
         destroy()
     }
 
+    private fun startDirectFallback(videoId: String) {
+        if (directFallbackActive) return
+        directFallbackActive = true
+
+        // The direct embed gets a real HTTPS document URL plus an explicit Referer header.
+        // Zooming the whole WebView by 16:9 keeps the video in square cover mode while the
+        // SquareFrameLayout clips the extra left/right area.
+        scaleX = COVER_SCALE
+        scaleY = COVER_SCALE
+        pivotX = width / 2f
+        pivotY = height / 2f
+
+        val url = "https://www.youtube.com/embed/$videoId" +
+            "?autoplay=1&playsinline=1&rel=0&controls=1"
+        loadUrl(
+            url,
+            mapOf(
+                "Referer" to "https://www.youtube.com/"
+            )
+        )
+    }
+
     private inner class PlayerBridge {
         @JavascriptInterface
         fun ready() {
@@ -109,6 +145,7 @@ class YouTubeDemoView @JvmOverloads constructor(
 
         @JavascriptInterface
         fun error(code: Int) {
+            val id = currentVideoId ?: return
             val detail = when (code) {
                 2 -> "invalid video ID / parameter"
                 5 -> "HTML5 player error"
@@ -117,7 +154,17 @@ class YouTubeDemoView @JvmOverloads constructor(
                 153 -> "YouTube rejected embed identity / HTTP Referer"
                 else -> "unknown player error"
             }
-            post { onVideoError?.invoke("YouTube player error $code // $detail") }
+
+            post {
+                if (code == 153 && !directFallbackActive) {
+                    onVideoError?.invoke(
+                        "YouTube player error 153 // retrying direct embed with explicit Referer"
+                    )
+                    startDirectFallback(id)
+                } else {
+                    onVideoError?.invoke("YouTube player error $code // $detail")
+                }
+            }
         }
 
         @JavascriptInterface
@@ -223,6 +270,7 @@ class YouTubeDemoView @JvmOverloads constructor(
     companion object {
         private const val APP_ORIGIN = "https://reality-scanner.app/"
         private const val APP_ORIGIN_ENCODED = "https%3A%2F%2Freality-scanner.app"
+        private const val COVER_SCALE = 1.7777778f
         private val VIDEO_ID = Regex("^[A-Za-z0-9_-]{11}$")
     }
 }
