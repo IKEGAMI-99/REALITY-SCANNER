@@ -4,9 +4,9 @@ Android向けの完全ローカルAIリアルタイム物体認識HUDです。
 
 ## APKダウンロード
 
-**Snapdragon QNN / HTP対応 v0.1.5:**
+**Snapdragon QNN / HTP対応 v0.1.6:**
 
-[REALITY-SCANNER-v0.1.5-QNN-EXTERNAL.apk をダウンロード](https://github.com/IKEGAMI-99/REALITY-SCANNER/releases/download/v0.1.5/REALITY-SCANNER-v0.1.5-QNN-EXTERNAL.apk)
+[REALITY-SCANNER-v0.1.6-QNN-HUD.apk をダウンロード](https://github.com/IKEGAMI-99/REALITY-SCANNER/releases/download/v0.1.6/REALITY-SCANNER-v0.1.6-QNN-HUD.apk)
 
 > 約299MB。YOLO26s / YOLO26nのQNN external EPContext bundle、YOLO26n 640高速フォールバック、YOLO26x互換モデルをAPK内に含みます。
 >
@@ -23,7 +23,9 @@ Android向けの完全ローカルAIリアルタイム物体認識HUDです。
 - Qualcomm QNN / Hexagon HTPを最優先バックエンドとして使用
 - QNN external EPContext方式（wrapper ONNX + companion `.bin`）
 - QNN時は640x640入力
+- external EPContextの補助ノードだけORT CPUを許可し、コンパイル済みグラフはQNN / HTPで実行
 - QNN失敗時はYOLO26n 640へ高速フォールバック
+- YOLO26n fallbackはNCHW / NHWCを実モデルshapeから自動判定
 - XNNPACKが利用できない環境でもYOLO26n 640 generic CPUへフォールバック
 - 最終互換用としてYOLO26x 960 ONNXも同梱
 - AI推論要求間隔40ms
@@ -38,10 +40,59 @@ Android向けの完全ローカルAIリアルタイム物体認識HUDです。
 - 暗所時の露出補助＋AI入力デジタルゲイン
 - 黒＋グリーンのCLI UI
 - リアルタイム処理ログ
-- JSONログ書き出し
+- JSONログを`Downloads/REALITY_SCANNER`へ直接書き出し
+- 書き出し直後のread-backバイト検証
 - GitHub Releasesのアプリ内更新確認
 - APKダウンロード＋インストーラ起動
 - GitHub ActionsによるAndroidビルド
+
+## v0.1.6 修正
+
+### QNN / HTP
+
+POCO F7 Ultra実機ログで、external EPContext自体は見つかっている一方、次のエラーでQNNセッション生成が止まっていました。
+
+```text
+This session contains graph nodes that are assigned to the default CPU EP,
+but fallback to CPU EP has been explicitly disabled by the user.
+```
+
+external EPContext wrapperでは、コンパイル済みQNNグラフの前後にQuantizeLinear / DequantizeLinearなどの小さな補助ノードがORT CPU側へ残る場合があります。v0.1.6では`session.disable_cpu_ep_fallback=1`をやめ、これらの補助ノードだけCPU実行を許可します。QNN EPContext本体は引き続き`libQnnHtp.so`を使用します。
+
+正常時のログ例:
+
+```text
+[QNN][INFO] YOLO26S-QNN EPContext loaded // HTP graph active // CPU helper nodes allowed // input=640x640 ...
+[MODEL][INFO] selected live detector YOLO26S-QNN/HTP
+```
+
+### YOLO26n fallback shape修正
+
+v0.1.5ではfallbackモデルがNHWC `[1,640,640,3]` の場合でもNCHW `[1,3,H,W]`として扱っていたため、次のエラーが出ていました。
+
+```text
+Got invalid dimensions for input: images
+index: 1 Got: 3 Expected: 640
+```
+
+v0.1.6ではモデルの4次元shapeを読み、`shape[1] == 3`ならNCHW、`shape[3] == 3`ならNHWCとして入力テンソルとRGB配列を組み立てます。
+
+### ログ書き出し 0B 修正
+
+v0.1.5までのDocumentsUI / DocumentProvider経由を廃止しました。Android 10以降はMediaStoreへ直接保存します。
+
+```text
+Downloads/REALITY_SCANNER/reality_scanner_log_YYYYMMDD_HHMMSS.json
+```
+
+保存後に同じMediaStore URIを再度開いて実際に読めるバイト数を数え、生成したJSONのバイト数と一致した場合だけ成功扱いにします。途中で失敗した場合は不完全なMediaStoreエントリを削除します。
+
+成功時のログ例:
+
+```text
+[LOG][INFO] export begin bytes=18432 target=reality_scanner_log_....json
+[LOG][INFO] export completed // Downloads/REALITY_SCANNER/... // verifiedBytes=18432 metadataBytes=18432
+```
 
 ## v0.1.5 修正
 
@@ -60,7 +111,7 @@ v0.1.5ではQNNコンテキストの格納方式を変更しています。
 v0.1.4:
 embedded EPContext ONNX
 
-v0.1.5:
+v0.1.5以降:
 wrapper model.onnx
 +
 external compiled context .bin
@@ -83,34 +134,6 @@ YOLO26x ONNX / compatibility fallback
 ```
 
 QNN推論が起動後に失敗した場合も、DetectorCascadeが次のバックエンドへ自動フェイルオーバーします。
-
-正常にNPUへ載った場合:
-
-```text
-[QNN][INFO] YOLO26S-QNN loaded on HTP input=640x640
-[MODEL][INFO] selected live detector YOLO26S-QNN/HTP
-```
-
-### ログ書き出し 0B 修正
-
-v0.1.4以前ではAndroidの保存UIを開いている間にアプリプロセスが再生成された場合、RAM上のpending JSONが消え、保存先だけ0Bで生成される可能性がありました。
-
-v0.1.5では:
-
-1. 保存UIを開く前にJSONをアプリ内部cacheへステージング
-2. ステージングファイルが0Bでないことを確認
-3. 保存UIから戻った際、RAM状態が失われていればcacheから復元
-4. `FileDescriptor`を優先して書き込み＋flush / sync
-5. 保存後のprovider reported sizeが0Bなら成功扱いにしない
-
-という方式へ変更しています。
-
-成功時のログ例:
-
-```text
-[LOG][INFO] export staged bytes=18432
-[LOG][INFO] export completed bytes=18432 providerBytes=18432
-```
 
 ## v0.1.4 修正
 
@@ -212,7 +235,7 @@ Androidの仕様上、初回は「不明なアプリのインストール」の�
 
 下部ターミナル表示とファイルログは同じ`AppLogger`を利用しています。
 
-`[ EXPORT ]`からAndroidの保存UIを開き、JSONとして書き出せます。
+`[ EXPORT ]`を押すとAndroid 10以降では`Downloads/REALITY_SCANNER`へJSONを直接保存します。保存後は同じURIを読み戻してバイト数を検証します。
 
 ## 今後
 
