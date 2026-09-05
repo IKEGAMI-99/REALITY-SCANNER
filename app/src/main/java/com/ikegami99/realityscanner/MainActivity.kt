@@ -28,6 +28,8 @@ import com.ikegami99.realityscanner.ui.HudOverlayView
 import com.ikegami99.realityscanner.ui.SquareFrameLayout
 import com.ikegami99.realityscanner.ui.TerminalView
 import com.ikegami99.realityscanner.update.AppUpdater
+import java.io.File
+import java.io.FileOutputStream
 import java.io.IOException
 import java.text.SimpleDateFormat
 import java.util.Date
@@ -43,6 +45,8 @@ class MainActivity : ComponentActivity() {
     private lateinit var cameraController: CameraController
     private lateinit var header: TextView
 
+    // Kept as a fast in-process copy, but the authoritative pending payload is also written to
+    // cache before DocumentsUI opens so process recreation cannot turn the destination into 0 B.
     private var pendingExport: String? = null
 
     private val requestCamera = registerForActivityResult(
@@ -59,15 +63,19 @@ class MainActivity : ComponentActivity() {
     private val exportDocument = registerForActivityResult(
         ActivityResultContracts.CreateDocument("application/json")
     ) { uri ->
-        val data = pendingExport
+        val stagedFile = pendingExportFile()
+        val data = pendingExport ?: runCatching {
+            stagedFile.takeIf { it.exists() && it.length() > 0L }?.readText(Charsets.UTF_8)
+        }.getOrNull()
         pendingExport = null
 
         if (uri == null) {
+            stagedFile.delete()
             logger.warn("LOG", "export cancelled")
             return@registerForActivityResult
         }
         if (data == null) {
-            logger.error("LOG", "export failed: no prepared payload")
+            logger.error("LOG", "export failed: staged payload missing after document picker")
             return@registerForActivityResult
         }
 
@@ -78,11 +86,26 @@ class MainActivity : ComponentActivity() {
         }
 
         runCatching {
-            val stream = contentResolver.openOutputStream(uri, "w")
-                ?: throw IOException("ContentResolver returned a null output stream")
-            stream.buffered().use { output ->
-                output.write(bytes)
-                output.flush()
+            // Prefer a real file descriptor with truncate semantics. Fall back to OutputStream for
+            // providers that expose only a pipe-style document URI.
+            val wroteViaFd = runCatching {
+                contentResolver.openFileDescriptor(uri, "rwt")?.use { pfd ->
+                    FileOutputStream(pfd.fileDescriptor).use { output ->
+                        output.write(bytes)
+                        output.flush()
+                        runCatching { output.fd.sync() }
+                    }
+                    true
+                } ?: false
+            }.getOrDefault(false)
+
+            if (!wroteViaFd) {
+                val stream = contentResolver.openOutputStream(uri, "w")
+                    ?: throw IOException("ContentResolver returned a null output stream")
+                stream.buffered().use { output ->
+                    output.write(bytes)
+                    output.flush()
+                }
             }
 
             val providerSize = runCatching {
@@ -94,6 +117,7 @@ class MainActivity : ComponentActivity() {
 
             providerSize
         }.onSuccess { providerSize ->
+            stagedFile.delete()
             val verified = if (providerSize != null && providerSize >= 0L) {
                 " providerBytes=$providerSize"
             } else {
@@ -177,8 +201,6 @@ class MainActivity : ComponentActivity() {
             runOnUiThread { terminal.append(entry) }
         }
 
-        // External QNN EPContext bundles keep the wrapper ONNX and companion context binary
-        // side-by-side to avoid embedded-context loading failures on current ORT/QNN builds.
         val detector = DetectorCascade(
             logger,
             listOf(
@@ -219,15 +241,36 @@ class MainActivity : ComponentActivity() {
         }
     }
 
+    private fun pendingExportFile(): File = File(cacheDir, "pending_reality_scanner_log.json")
+
     private fun exportLogs() {
         val payload = logger.exportJson()
-        val byteCount = payload.toByteArray(Charsets.UTF_8).size
-        if (byteCount == 0) {
+        val bytes = payload.toByteArray(Charsets.UTF_8)
+        if (bytes.isEmpty()) {
             logger.error("LOG", "export preparation failed: generated payload is empty")
             return
         }
+
+        val stagedFile = pendingExportFile()
+        val staged = runCatching {
+            FileOutputStream(stagedFile, false).use { output ->
+                output.write(bytes)
+                output.flush()
+                runCatching { output.fd.sync() }
+            }
+            stagedFile.length()
+        }.getOrElse {
+            logger.error("LOG", "export staging failed: ${it.javaClass.simpleName}: ${it.message}")
+            return
+        }
+
+        if (staged <= 0L) {
+            logger.error("LOG", "export staging failed: cache file is 0 bytes")
+            return
+        }
+
         pendingExport = payload
-        logger.info("LOG", "export prepared bytes=$byteCount")
+        logger.info("LOG", "export staged bytes=$staged")
         val stamp = SimpleDateFormat("yyyyMMdd_HHmmss", Locale.US).format(Date())
         exportDocument.launch("reality_scanner_log_$stamp.json")
         logger.info("LOG", "export UI opened")
