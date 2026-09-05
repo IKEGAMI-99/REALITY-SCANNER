@@ -78,7 +78,6 @@ jobs:
           cp -a qnn_s_bundle/. app/src/main/assets/models/qnn_s/
           cp -a qnn_n_bundle/. app/src/main/assets/models/qnn_n/
 
-          # Fast fallback if the vendor QNN stack still refuses the precompiled context.
           cp yolo26n.onnx app/src/main/assets/models/yolo26n.onnx
 
           echo "QNN-S bundle:"
@@ -93,25 +92,25 @@ jobs:
 
       - name: Rename APK
         run: |
-          cp app/build/outputs/apk/debug/app-debug.apk REALITY-SCANNER-v0.1.6-QNN-HUD.apk
-          test -s REALITY-SCANNER-v0.1.6-QNN-HUD.apk
-          ls -lh REALITY-SCANNER-v0.1.6-QNN-HUD.apk
+          cp app/build/outputs/apk/debug/app-debug.apk REALITY-SCANNER-v0.1.7-YOUTUBE-DEMO.apk
+          test -s REALITY-SCANNER-v0.1.7-YOUTUBE-DEMO.apk
+          ls -lh REALITY-SCANNER-v0.1.7-YOUTUBE-DEMO.apk
 
       - uses: actions/upload-artifact@v4
         with:
-          name: reality-scanner-v0.1.6
-          path: REALITY-SCANNER-v0.1.6-QNN-HUD.apk
+          name: reality-scanner-v0.1.7
+          path: REALITY-SCANNER-v0.1.7-YOUTUBE-DEMO.apk
           retention-days: 30
 
       - name: Publish GitHub Release APK
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
-          NOTES="Fixes the POCO F7 Ultra QNN startup failure by allowing the small CPU helper nodes required around an external QNN EPContext while keeping the compiled graph on HTP. Fixes YOLO26n NHWC/NCHW shape detection so the 640 fallback no longer creates an invalid 1x3x640x3 tensor. Replaces DocumentsUI log export with direct MediaStore Downloads/REALITY_SCANNER output and verifies the saved file by reading its bytes back before reporting success."
-          if gh release view v0.1.6 >/dev/null 2>&1; then
-            gh release upload v0.1.6 REALITY-SCANNER-v0.1.6-QNN-HUD.apk --clobber
+          NOTES="Adds YouTube demo mode. Paste a YouTube URL or video ID from the new DEMO control to replace the live camera with an embedded YouTube player. The 16:9 player is center-cropped to cover the square HUD area instead of appearing as a small landscape frame. Camera binding pauses while demo mode is active and resumes without destroying the loaded detector."
+          if gh release view v0.1.7 >/dev/null 2>&1; then
+            gh release upload v0.1.7 REALITY-SCANNER-v0.1.7-YOUTUBE-DEMO.apk --clobber
           else
-            gh release create v0.1.6 REALITY-SCANNER-v0.1.6-QNN-HUD.apk \
-              --title "REALITY SCANNER v0.1.6" \
+            gh release create v0.1.7 REALITY-SCANNER-v0.1.7-YOUTUBE-DEMO.apk \
+              --title "REALITY SCANNER v0.1.7" \
               --notes "$NOTES"
           fi
