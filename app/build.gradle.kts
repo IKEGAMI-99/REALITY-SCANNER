@@ -10,8 +10,8 @@ android {
         applicationId = "com.ikegami99.realityscanner"
         minSdk = 28
         targetSdk = 37
-        versionCode = 3
-        versionName = "0.1.2"
+        versionCode = 4
+        versionName = "0.1.3"
 
         buildConfigField("String", "GITHUB_REPO", "\"IKEGAMI-99/REALITY-SCANNER\"")
     }
@@ -26,6 +26,9 @@ android {
     }
 
     packaging {
+        jniLibs {
+            useLegacyPackaging = true
+        }
         resources {
             excludes += setOf("META-INF/DEPENDENCIES", "META-INF/LICENSE*", "META-INF/NOTICE*")
         }
@@ -42,5 +45,6 @@ dependencies {
     implementation("androidx.camera:camera-lifecycle:$cameraX")
     implementation("androidx.camera:camera-view:$cameraX")
 
-    implementation("com.microsoft.onnxruntime:onnxruntime-android:1.28.0")
+    implementation("com.microsoft.onnxruntime:onnxruntime-android-qnn:1.26.0")
+    implementation("com.qualcomm.qti:qnn-runtime:2.48.0")
 }
