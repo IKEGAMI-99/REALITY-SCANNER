@@ -10,8 +10,11 @@ import android.os.Build
 import android.os.Bundle
 import android.os.Environment
 import android.provider.MediaStore
+import android.text.InputType
 import android.view.Gravity
+import android.view.View
 import android.view.ViewGroup
+import android.widget.EditText
 import android.widget.FrameLayout
 import android.widget.LinearLayout
 import android.widget.TextView
@@ -31,6 +34,7 @@ import com.ikegami99.realityscanner.tracking.TrackManager
 import com.ikegami99.realityscanner.ui.HudOverlayView
 import com.ikegami99.realityscanner.ui.SquareFrameLayout
 import com.ikegami99.realityscanner.ui.TerminalView
+import com.ikegami99.realityscanner.ui.YouTubeDemoView
 import com.ikegami99.realityscanner.update.AppUpdater
 import java.io.File
 import java.io.FileOutputStream
@@ -48,13 +52,19 @@ class MainActivity : ComponentActivity() {
     private lateinit var terminal: TerminalView
     private lateinit var cameraController: CameraController
     private lateinit var header: TextView
+    private lateinit var preview: PreviewView
+    private lateinit var hud: HudOverlayView
+    private lateinit var demoView: YouTubeDemoView
+
+    private var isDemoMode = false
+    private var availableUpdateVersion: String? = null
 
     private val requestCamera = registerForActivityResult(
         ActivityResultContracts.RequestPermission()
     ) { granted ->
         if (granted) {
             logger.info("CAMERA", "permission granted")
-            cameraController.start()
+            if (!isDemoMode) cameraController.start()
         } else {
             logger.error("CAMERA", "permission denied")
         }
@@ -84,7 +94,6 @@ class MainActivity : ComponentActivity() {
         }
 
         header = TextView(this).apply {
-            text = "REALITY SCANNER v${BuildConfig.VERSION_NAME} // LOCAL\nMODE HYBRID  LOW LIGHT AUTO"
             setTextColor(green)
             typeface = Typeface.MONOSPACE
             textSize = 12f
@@ -92,6 +101,7 @@ class MainActivity : ComponentActivity() {
             setPadding(dp(10), dp(7), dp(10), dp(7))
             setBackgroundColor(Color.rgb(1, 8, 2))
         }
+        renderHeader()
         root.addView(
             header,
             LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT)
@@ -100,14 +110,22 @@ class MainActivity : ComponentActivity() {
         val cameraSquare = SquareFrameLayout(this).apply {
             setBackgroundColor(Color.BLACK)
         }
-        val preview = PreviewView(this).apply {
+        preview = PreviewView(this).apply {
             scaleType = PreviewView.ScaleType.FILL_CENTER
             implementationMode = PreviewView.ImplementationMode.PERFORMANCE
         }
-        val hud = HudOverlayView(this)
+        demoView = YouTubeDemoView(this).apply {
+            onVideoLoaded = { id -> logger.info("DEMO", "YouTube loaded // id=$id // crop=cover-square") }
+            onVideoError = { message -> logger.error("DEMO", message) }
+        }
+        hud = HudOverlayView(this)
 
         cameraSquare.addView(
             preview,
+            FrameLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.MATCH_PARENT)
+        )
+        cameraSquare.addView(
+            demoView,
             FrameLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.MATCH_PARENT)
         )
         cameraSquare.addView(
@@ -152,17 +170,97 @@ class MainActivity : ComponentActivity() {
 
         terminal.onExport = { exportLogs() }
         terminal.onUpdate = { checkUpdate(manual = true) }
+        terminal.onDemo = {
+            if (isDemoMode) exitDemoMode() else showDemoDialog()
+        }
 
         logger.info("SYSTEM", "boot sequence start")
         logger.info("SYSTEM", "device=${android.os.Build.MANUFACTURER} ${android.os.Build.MODEL}")
         logger.info("SYSTEM", "offline hybrid inference pipeline ready")
         logger.info("MODEL", "priority=QNN-S(ext) > QNN-N(ext) > YOLO26N-small > YOLO26X-compat")
+        logger.info("DEMO", "YouTube demo ready // square center-crop display")
 
         ensureCamera()
         checkUpdate(manual = false)
     }
 
+    private fun renderHeader() {
+        val update = availableUpdateVersion?.let { " // UPDATE $it" }.orEmpty()
+        val mode = if (isDemoMode) {
+            "MODE DEMO  SOURCE YOUTUBE  CROP COVER"
+        } else {
+            "MODE HYBRID  LOW LIGHT AUTO"
+        }
+        header.text = "REALITY SCANNER v${BuildConfig.VERSION_NAME} // LOCAL$update\n$mode"
+    }
+
+    private fun showDemoDialog() {
+        val prefs = getSharedPreferences("demo", MODE_PRIVATE)
+        val input = EditText(this).apply {
+            hint = "https://www.youtube.com/watch?v=..."
+            setText(prefs.getString("last_youtube_url", ""))
+            inputType = InputType.TYPE_CLASS_TEXT or InputType.TYPE_TEXT_VARIATION_URI
+            setSingleLine(true)
+            setSelectAllOnFocus(true)
+            setPadding(dp(14), dp(10), dp(14), dp(10))
+        }
+
+        AlertDialog.Builder(this)
+            .setTitle("YOUTUBE DEMO")
+            .setMessage("YouTube URLまたは11文字のVideo IDを入力。映像は正方形HUD領域いっぱいに中央クロップします。")
+            .setView(input)
+            .setNegativeButton("CANCEL", null)
+            .setPositiveButton("PLAY") { _, _ ->
+                val source = input.text?.toString()?.trim().orEmpty()
+                if (source.isBlank()) {
+                    logger.warn("DEMO", "start cancelled // empty YouTube URL")
+                    return@setPositiveButton
+                }
+                if (enterDemoMode(source)) {
+                    prefs.edit().putString("last_youtube_url", source).apply()
+                }
+            }
+            .show()
+    }
+
+    private fun enterDemoMode(source: String): Boolean {
+        if (!demoView.play(source)) return false
+
+        isDemoMode = true
+        cameraController.pause()
+        preview.visibility = View.GONE
+        demoView.visibility = View.VISIBLE
+        hud.setTracks(emptyList())
+        hud.setStats(
+            HudOverlayView.Stats(
+                cameraFps = 0f,
+                aiFps = 0f,
+                inferenceMs = 0f,
+                lowLight = false,
+                backend = "DEMO/YOUTUBE"
+            )
+        )
+        terminal.setDemoActive(true)
+        renderHeader()
+        logger.info("DEMO", "mode active // camera paused // YouTube center-crop cover")
+        return true
+    }
+
+    private fun exitDemoMode() {
+        if (!isDemoMode) return
+
+        isDemoMode = false
+        demoView.stopPlayback()
+        demoView.visibility = View.GONE
+        preview.visibility = View.VISIBLE
+        terminal.setDemoActive(false)
+        renderHeader()
+        logger.info("DEMO", "mode stopped // restoring live camera")
+        ensureCamera()
+    }
+
     private fun ensureCamera() {
+        if (isDemoMode) return
         if (ContextCompat.checkSelfPermission(this, Manifest.permission.CAMERA) ==
             PackageManager.PERMISSION_GRANTED
         ) {
@@ -229,13 +327,11 @@ class MainActivity : ComponentActivity() {
                 throw IOException("MediaStore could not finalize pending file")
             }
 
-            // Do not trust the provider's metadata alone. Re-open the exact URI and count the
-            // bytes that can actually be read back. EXPORT is successful only if they match.
-            val readBackBytes = contentResolver.openInputStream(uri)?.use { input ->
+            val readBackBytes = contentResolver.openInputStream(uri)?.use { inputStream ->
                 var total = 0L
                 val buffer = ByteArray(16 * 1024)
                 while (true) {
-                    val count = input.read(buffer)
+                    val count = inputStream.read(buffer)
                     if (count < 0) break
                     total += count
                 }
@@ -280,11 +376,11 @@ class MainActivity : ComponentActivity() {
             runCatching { output.fd.sync() }
         }
 
-        val readBackBytes = file.inputStream().use { input ->
+        val readBackBytes = file.inputStream().use { inputStream ->
             var total = 0L
             val buffer = ByteArray(16 * 1024)
             while (true) {
-                val count = input.read(buffer)
+                val count = inputStream.read(buffer)
                 if (count < 0) break
                 total += count
             }
@@ -304,9 +400,8 @@ class MainActivity : ComponentActivity() {
             runOnUiThread {
                 when (result) {
                     is AppUpdater.Result.Available -> {
-                        header.text =
-                            "REALITY SCANNER v${BuildConfig.VERSION_NAME} // UPDATE ${result.release.version}\n" +
-                            "MODE HYBRID  LOW LIGHT AUTO"
+                        availableUpdateVersion = result.release.version
+                        renderHeader()
 
                         if (manual) {
                             AlertDialog.Builder(this)
@@ -324,6 +419,8 @@ class MainActivity : ComponentActivity() {
                     }
 
                     AppUpdater.Result.Current -> {
+                        availableUpdateVersion = null
+                        renderHeader()
                         if (manual) {
                             AlertDialog.Builder(this)
                                 .setTitle("SYSTEM CURRENT")
@@ -348,6 +445,7 @@ class MainActivity : ComponentActivity() {
     }
 
     override fun onDestroy() {
+        if (::demoView.isInitialized) demoView.release()
         if (::cameraController.isInitialized) cameraController.stop()
         super.onDestroy()
     }
