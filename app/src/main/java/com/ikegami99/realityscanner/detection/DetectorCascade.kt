@@ -41,7 +41,18 @@ class DetectorCascade(
         lowLightGain: Float
     ): List<Detection> {
         val current = active
-        if (current != null) return current.detect(bitmap, rotationDegrees, lowLightGain)
+        if (current != null) {
+            val result = current.detect(bitmap, rotationDegrees, lowLightGain)
+            if (current.isReady) return result
+
+            synchronized(this) {
+                if (active === current) {
+                    logger.warn("MODEL", "active detector ${current.backendName} became unavailable -> failover")
+                    active = null
+                    runCatching { current.close() }
+                }
+            }
+        }
         return choose(bitmap, rotationDegrees, lowLightGain).second
     }
 
