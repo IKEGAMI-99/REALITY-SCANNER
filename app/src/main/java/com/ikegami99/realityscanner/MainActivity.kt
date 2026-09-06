@@ -157,9 +157,30 @@ class MainActivity : ComponentActivity() {
         val detector = DetectorCascade(
             logger,
             listOf(
+                // Keep HTP first: if Snapdragon NPU accepts the external context it should be both
+                // faster and more accurate than the reduced-resolution fallback.
                 YoloQnnDetector(applicationContext, logger, "qnn_s/model.onnx", "YOLO26S-QNN"),
                 YoloQnnDetector(applicationContext, logger, "qnn_n/model.onnx", "YOLO26N-QNN"),
-                YoloFastOnnxDetector(applicationContext, logger, "yolo26n.onnx", "YOLO26N-XNN"),
+                // FAST20 path: 320x320 is ~1/4 the pixel compute of 640 and prefers QNN GPU.
+                YoloFastOnnxDetector(
+                    applicationContext,
+                    logger,
+                    "yolo26n_320.onnx",
+                    "YOLO26N-FAST20",
+                    tryQnnGpu = true,
+                    allowCpuFallback = true,
+                    confidenceThreshold = 0.38f
+                ),
+                // Balanced compatibility fallbacks if the FAST20 model itself cannot load.
+                YoloFastOnnxDetector(
+                    applicationContext,
+                    logger,
+                    "yolo26n.onnx",
+                    "YOLO26N-640",
+                    tryQnnGpu = true,
+                    allowCpuFallback = true,
+                    confidenceThreshold = 0.40f
+                ),
                 YoloOnnxDetector(applicationContext, logger)
             )
         )
@@ -187,7 +208,8 @@ class MainActivity : ComponentActivity() {
         logger.info("SYSTEM", "boot sequence start")
         logger.info("SYSTEM", "device=${android.os.Build.MANUFACTURER} ${android.os.Build.MODEL}")
         logger.info("SYSTEM", "offline hybrid inference pipeline ready")
-        logger.info("MODEL", "priority=QNN-S(ext) > QNN-N(ext) > YOLO26N-small > YOLO26X-compat")
+        logger.info("MODEL", "priority=QNN-S(ext) > QNN-N(ext) > FAST20-320-GPU/CPU > 640 > X")
+        logger.info("PERF", "FAST20 target // detector input=320 // demo gate=40ms // capture=40ms")
         logger.info("DEMO", "YouTube demo ready // square crop // PixelCopy AI inference")
 
         ensureCamera()
@@ -197,9 +219,9 @@ class MainActivity : ComponentActivity() {
     private fun renderHeader() {
         val update = availableUpdateVersion?.let { " // UPDATE $it" }.orEmpty()
         val mode = if (isDemoMode) {
-            "MODE DEMO  YOUTUBE  AI LIVE  CROP COVER"
+            "MODE DEMO  FAST20  YOUTUBE  AI LIVE"
         } else {
-            "MODE HYBRID  LOW LIGHT AUTO"
+            "MODE FAST20  LOW LIGHT AUTO"
         }
         header.text = "REALITY SCANNER v${BuildConfig.VERSION_NAME} // LOCAL$update\n$mode"
     }
@@ -249,7 +271,7 @@ class MainActivity : ComponentActivity() {
         demoFramePump.start()
         logger.info(
             "DEMO",
-            "mode active // camera paused // YouTube center-crop cover // live YOLO enabled"
+            "mode active // camera paused // YouTube center-crop cover // FAST20 YOLO enabled"
         )
         return true
     }
