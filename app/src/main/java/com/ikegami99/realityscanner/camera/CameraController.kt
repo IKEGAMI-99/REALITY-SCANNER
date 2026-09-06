@@ -100,11 +100,6 @@ class CameraController(
         }, ContextCompat.getMainExecutor(previewView.context))
     }
 
-    /**
-     * Switches inference ownership from CameraX to the demo-frame pump while keeping the detector
-     * and inference executor alive. Any camera inference that was already in flight is invalidated
-     * by sourceGeneration and is not allowed to repopulate the HUD after the switch.
-     */
     fun pause() {
         sourceMode = SourceMode.DEMO
         sourceGeneration.incrementAndGet()
@@ -114,6 +109,8 @@ class CameraController(
         aiFps = 0f
         lastInferenceNanos = 0L
         lastLowLight = false
+        inferenceCount = 0
+        aiWindowStart = System.nanoTime()
         trackManager.clear()
         hud.setTracks(emptyList())
         publishHud()
@@ -176,11 +173,6 @@ class CameraController(
         )
     }
 
-    /**
-     * Takes ownership of [bitmap]. The bitmap is always recycled by this controller, including
-     * when the detector is busy and the frame is dropped. This lets the PixelCopy demo pump submit
-     * frames at display cadence without building an unbounded queue behind a slow detector.
-     */
     fun submitDemoFrame(bitmap: Bitmap): Boolean {
         val now = System.nanoTime()
         if (sourceMode != SourceMode.DEMO) {
@@ -227,8 +219,6 @@ class CameraController(
                 )
                 val completed = System.nanoTime()
 
-                // A result from the previous source must never re-enter the HUD after a
-                // CAMERA <-> DEMO transition.
                 if (sourceMode != expectedMode || sourceGeneration.get() != generation) {
                     logger.info(logTag, "stale inference discarded // source switched")
                     return@execute
@@ -351,7 +341,7 @@ class CameraController(
 
     companion object {
         private const val INFERENCE_INTERVAL_NANOS = 40_000_000L
-        private const val DEMO_INFERENCE_INTERVAL_NANOS = 80_000_000L
+        private const val DEMO_INFERENCE_INTERVAL_NANOS = 40_000_000L
         private const val LOW_LIGHT_ENTER_LUMA = 45f
         private const val LOW_LIGHT_EXIT_LUMA = 55f
     }
