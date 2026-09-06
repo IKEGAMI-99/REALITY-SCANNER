@@ -4,15 +4,46 @@ Android向けの完全ローカルAIリアルタイム物体認識HUDです。
 
 ## APKダウンロード
 
-**Snapdragon QNN / HTP対応 v0.1.8:**
+**Snapdragon QNN / HTP対応 v0.1.9:**
 
-[REALITY-SCANNER-v0.1.8-DEMO-FIX.apk をダウンロード](https://github.com/IKEGAMI-99/REALITY-SCANNER/releases/download/v0.1.8/REALITY-SCANNER-v0.1.8-DEMO-FIX.apk)
+[REALITY-SCANNER-v0.1.9-DEMO-AI.apk をダウンロード](https://github.com/IKEGAMI-99/REALITY-SCANNER/releases/download/v0.1.9/REALITY-SCANNER-v0.1.9-DEMO-AI.apk)
 
 > 約299MB。YOLO26s / YOLO26n QNN external EPContext bundle、YOLO26n 640高速フォールバック、YOLO26x互換モデルをAPK内に含みます。
 >
 > v0.1.1以降は固定debug署名を使用しているため、アプリ内UPDATEから上書き更新できます。
 
 黒背景＋グリーンのCLI / タクティカルHUDで、上部を正方形の映像領域、下部を実処理ログが流れるライブターミナルとして構成しています。
+
+## v0.1.9 YouTubeデモAI推論
+
+v0.1.8まではYouTubeデモは表示専用で、DEMOへ切り替えるとCameraX推論を停止したままBBoxを更新していませんでした。
+
+v0.1.9ではYouTube表示中の正方形領域をAndroid `PixelCopy`で継続的に取得し、CameraXと同じDetectorへ投入します。
+
+```text
+YouTube / WebView
+      ↓ PixelCopy latest frame
+square demo frame
+      ↓
+DetectorCascade
+      ↓
+YOLO26s QNN / HTP
+  or YOLO26n fallback
+      ↓
+TrackManager
+      ↓
+BBox / vector HUD
+```
+
+- DEMO映像に対して実際にYOLO推論を実行
+- PixelCopyを100ms間隔で要求
+- 推論中は新しいフレームをキューへ溜めずdropし、常に最新フレームへ追従
+- CAMERA / DEMOごとにsource generationを持ち、切替前に処理中だったカメラ推論結果を破棄
+- DEMO開始時に旧Trackをクリア
+- DEMO中のHUD backendは`DEMO/<detector backend>`表示
+- `[ CAMERA ]`でCameraXへ戻ってもDetectorは再ロードしない
+
+現在のPOCO F7 Ultra実機でYOLO26n CPU fallbackが約175msの場合、DEMO推論は理論上およそ5fps前後で更新できます。QNN / HTPが有効になれば同じframe pumpのままさらに高頻度化できます。
 
 ## v0.1.8 修正
 
@@ -37,10 +68,6 @@ YouTube autoplay blocked // tap the player once to start playback
 
 ### BBoxの滑り修正
 
-推論結果の間を速度ベクトルで長く外挿していたため、静止物体でもBBoxがじわっと移動することがありました。
-
-v0.1.8では:
-
 - HUD上の最大外挿時間を0.60秒から0.18秒へ短縮
 - 相対速度`0.025/s`未満を静止扱いにしてBBoxを固定
 - TrackManager側にもvelocity dead-zoneを追加
@@ -53,7 +80,7 @@ v0.1.8では:
 
 1. `[ DEMO ]`を押す
 2. YouTube URLまたは11文字のVideo IDを入力
-3. `[ PLAY ]`でデモ再生
+3. `[ PLAY ]`でデモ再生＋YOLO推論開始
 4. デモ中はボタンが`[ CAMERA ]`に変わり、押すとライブカメラへ復帰
 
 対応URL例:
@@ -80,17 +107,18 @@ VIDEO_ID
 └──────────────────────────────┘
 ```
 
-デモモード中はCameraXのbindだけを一時停止し、ロード済みDetectorと推論Executorは保持します。そのため`[ CAMERA ]`で戻った際にモデルを破棄・再ロードしません。
-
-現在のYouTubeデモは**映像表示用デモソース**です。YouTube WebViewの映像フレーム自体はYOLOへ入力せず、デモ再生中はカメラ推論を停止します。HUDのスキャン表示と`DEMO/YOUTUBE`ステータスは維持されます。
+デモモード中はCameraXのbindだけを一時停止し、ロード済みDetectorと推論Executorは保持します。YouTubeの表示領域をPixelCopyして同じDetectorで推論します。
 
 ## 現在の実装
 
 - CameraXリアルタイムカメラ
 - 正方形カメラ表示
 - YouTubeデモ再生
+- YouTube動画フレームへのリアルタイムYOLO推論
+- PixelCopy latest-frame demo pipeline
 - YouTube 16:9映像の1:1中央クロップ / cover表示
 - CAMERA ↔ YOUTUBE DEMO切替
+- source generationによる切替前推論結果の破棄
 - Android system bar / display cutout Safe Insets
 - Camera AnalysisとYOLO推論の別スレッド化
 - Qualcomm QNN / Hexagon HTP優先
@@ -133,6 +161,13 @@ YOLO26x ONNX / compatibility fallback
 ```text
 [QNN][INFO] YOLO26S-QNN EPContext loaded // HTP graph active // CPU helper nodes allowed
 [MODEL][INFO] selected live detector YOLO26S-QNN/HTP
+```
+
+DEMO推論中は:
+
+```text
+[DEMO][INFO] frame inference started // PixelCopy latest-frame pump
+[DEMO-YOLO][INFO] objects=... tracks=... infer=... backend=...
 ```
 
 ## AIモデル
@@ -184,7 +219,6 @@ Downloads/REALITY_SCANNER/reality_scanner_log_YYYYMMDD_HHMMSS.json
 
 ## 今後
 
-- YouTube / 動画フレームをYOLOへ直接渡すデモ推論経路
 - ByteTrack / Optical Flowによる実フレーム追跡
 - Depth推定
 - 実距離とm/s速度
