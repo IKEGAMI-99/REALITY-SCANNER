@@ -4,9 +4,9 @@ Android向けの完全ローカルAIリアルタイム物体認識HUDです。
 
 ## APKダウンロード
 
-**Snapdragon QNN / HTP対応 v0.1.7:**
+**Snapdragon QNN / HTP対応 v0.1.8:**
 
-[REALITY-SCANNER-v0.1.7-YOUTUBE-DEMO.apk をダウンロード](https://github.com/IKEGAMI-99/REALITY-SCANNER/releases/download/v0.1.7/REALITY-SCANNER-v0.1.7-YOUTUBE-DEMO.apk)
+[REALITY-SCANNER-v0.1.8-DEMO-FIX.apk をダウンロード](https://github.com/IKEGAMI-99/REALITY-SCANNER/releases/download/v0.1.8/REALITY-SCANNER-v0.1.8-DEMO-FIX.apk)
 
 > 約299MB。YOLO26s / YOLO26n QNN external EPContext bundle、YOLO26n 640高速フォールバック、YOLO26x互換モデルをAPK内に含みます。
 >
@@ -14,9 +14,42 @@ Android向けの完全ローカルAIリアルタイム物体認識HUDです。
 
 黒背景＋グリーンのCLI / タクティカルHUDで、上部を正方形の映像領域、下部を実処理ログが流れるライブターミナルとして構成しています。
 
-## v0.1.7 YouTubeデモモード
+## v0.1.8 修正
 
-下部ターミナルに`[ DEMO ]`ボタンを追加しました。
+### YouTubeデモ再生
+
+YouTube WebView埋め込みで「再生できません」になるケースへ対応しました。
+
+- YouTube IFrame Player APIを使用
+- 埋め込みページへ明示的なHTTPS originを設定
+- `referrerpolicy=origin`を設定
+- YouTube player error codeをAndroidターミナルへ通知
+- error 153時は、明示的な`Referer`ヘッダ付きdirect embedへ自動フォールバック
+- direct fallbackでも16:9映像を正方形HUDへcover表示
+
+ターミナルでは主に以下を確認できます。
+
+```text
+YouTube player error 101 / 150 // video owner disabled embedded playback
+YouTube player error 153 // retrying direct embed with explicit Referer
+YouTube autoplay blocked // tap the player once to start playback
+```
+
+### BBoxの滑り修正
+
+推論結果の間を速度ベクトルで長く外挿していたため、静止物体でもBBoxがじわっと移動することがありました。
+
+v0.1.8では:
+
+- HUD上の最大外挿時間を0.60秒から0.18秒へ短縮
+- 相対速度`0.025/s`未満を静止扱いにしてBBoxを固定
+- TrackManager側にもvelocity dead-zoneを追加
+- 長い推論間隔から算出した速度の重みを下げる
+- Track matching用の予測時間も5.0秒から1.2秒へ短縮
+
+## YouTubeデモモード
+
+下部ターミナルの`[ DEMO ]`ボタンから使用します。
 
 1. `[ DEMO ]`を押す
 2. YouTube URLまたは11文字のVideo IDを入力
@@ -49,7 +82,7 @@ VIDEO_ID
 
 デモモード中はCameraXのbindだけを一時停止し、ロード済みDetectorと推論Executorは保持します。そのため`[ CAMERA ]`で戻った際にモデルを破棄・再ロードしません。
 
-現在のv0.1.7ではYouTubeは**映像表示用デモソース**です。YouTube WebViewの映像フレーム自体はYOLOへ入力せず、デモ再生中はカメラ推論を停止します。HUDのスキャン表示と`DEMO/YOUTUBE`ステータスは維持されます。
+現在のYouTubeデモは**映像表示用デモソース**です。YouTube WebViewの映像フレーム自体はYOLOへ入力せず、デモ再生中はカメラ推論を停止します。HUDのスキャン表示と`DEMO/YOUTUBE`ステータスは維持されます。
 
 ## 現在の実装
 
@@ -71,8 +104,8 @@ VIDEO_ID
 - Track ID
 - BBoxコーナーHUD
 - BBox中央からの速度ベクトル
-- 0.5秒先予測位置
 - 相対速度表示
+- BBox予測外挿のdead-zone / short horizon
 - 低照度自動判定＋ヒステリシス
 - 暗所時露出補助＋AI入力デジタルゲイン
 - リアルタイム処理ログ
