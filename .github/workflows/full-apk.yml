@@ -97,25 +97,25 @@ jobs:
 
       - name: Rename APK
         run: |
-          cp app/build/outputs/apk/debug/app-debug.apk REALITY-SCANNER-v0.2.1-FAST20.apk
-          test -s REALITY-SCANNER-v0.2.1-FAST20.apk
-          ls -lh REALITY-SCANNER-v0.2.1-FAST20.apk
+          cp app/build/outputs/apk/debug/app-debug.apk REALITY-SCANNER-v0.2.2-FASTEST-CAPTURE.apk
+          test -s REALITY-SCANNER-v0.2.2-FASTEST-CAPTURE.apk
+          ls -lh REALITY-SCANNER-v0.2.2-FASTEST-CAPTURE.apk
 
       - uses: actions/upload-artifact@v4
         with:
-          name: reality-scanner-v0.2.1
-          path: REALITY-SCANNER-v0.2.1-FAST20.apk
+          name: reality-scanner-v0.2.2
+          path: REALITY-SCANNER-v0.2.2-FASTEST-CAPTURE.apk
           retention-days: 30
 
       - name: Publish GitHub Release APK
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
-          NOTES="FAST20 speed-first build. Adds YOLO26n 320x320 QNN-GPU/CPU fallback (~1/4 pixel compute vs 640), reduces YouTube PixelCopy cadence from 100ms to 40ms and demo inference gate from 80ms to 40ms, while retaining v0.2.0 tracking improvements. Targets roughly 15-20 AI FPS on POCO F7 Ultra when QNN GPU is active; exact rate depends on device temperature and scene."
-          if gh release view v0.2.1 >/dev/null 2>&1; then
-            gh release upload v0.2.1 REALITY-SCANNER-v0.2.1-FAST20.apk --clobber
+          NOTES="Adds FASTEST CAPTURE wipe at the lower-left of the HUD. The app selects the fastest currently valid track, crops that object from the source frame, and only replaces the wipe when confidence, visibility, bbox size, freshness and basic image-quality checks pass. Failed crops keep the previous successful image. Capture attempts are limited to 4 Hz so FAST20 inference remains the priority."
+          if gh release view v0.2.2 >/dev/null 2>&1; then
+            gh release upload v0.2.2 REALITY-SCANNER-v0.2.2-FASTEST-CAPTURE.apk --clobber
           else
-            gh release create v0.2.1 REALITY-SCANNER-v0.2.1-FAST20.apk \
-              --title "REALITY SCANNER v0.2.1 FAST20" \
+            gh release create v0.2.2 REALITY-SCANNER-v0.2.2-FASTEST-CAPTURE.apk \
+              --title "REALITY SCANNER v0.2.2 FASTEST CAPTURE" \
               --notes "$NOTES"
           fi
