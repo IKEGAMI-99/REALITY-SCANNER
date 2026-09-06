@@ -2,6 +2,7 @@ from pathlib import Path
 import importlib
 import shutil
 
+import onnx
 from ultralytics import YOLO
 
 
@@ -20,10 +21,6 @@ def patch_ultralytics_for_external_qnn() -> None:
         qnn_source.write_text(qnn_text.replace(embedded, external), encoding="utf-8")
         print(f"patched {qnn_source} to ep.context_embed_mode=0")
 
-    # External EPContext puts the actual compiled graph in a companion .bin, leaving only a
-    # few-KB ONNX wrapper. Ultralytics' generic >0.1 MB export sanity check incorrectly rejects
-    # that valid wrapper, so lower the generic threshold for this controlled CI export. We still
-    # perform our own strict non-empty .bin validation below.
     exporter_source = Path(exporter.__file__)
     exporter_text = exporter_source.read_text(encoding="utf-8")
     old_check = 'assert mb > 0.1, f"{mb:.3f} MB output model too small (likely corrupt or unsupported ops)"'
@@ -43,6 +40,49 @@ def patch_ultralytics_for_external_qnn() -> None:
     if "mb > 0.001" not in Path(exporter.__file__).read_text(encoding="utf-8"):
         raise RuntimeError("Ultralytics exporter size-check reload verification failed")
     print("reloaded Ultralytics exporter in external-QNN mode")
+
+
+def normalize_epcontext_source(model_path: Path) -> None:
+    """Normalize the EPContext source string for current ORT QNN compatibility.
+
+    Ultralytics/ORT export can emit `QNNExecutionProvider`, while current EPContext design accepts
+    `QNN` or `QnnExecutionProvider`. The mismatch causes Android ORT to reject the context before
+    QNN HTP even attempts to load it.
+    """
+    model = onnx.load(str(model_path), load_external_data=False)
+    changed = 0
+    sources = []
+    for node in model.graph.node:
+        if node.op_type != "EPContext":
+            continue
+        for attr in node.attribute:
+            if attr.name != "source":
+                continue
+            value = attr.s.decode("utf-8", errors="replace")
+            sources.append(value)
+            if value == "QNNExecutionProvider":
+                attr.s = b"QnnExecutionProvider"
+                changed += 1
+
+    if changed:
+        onnx.save(model, str(model_path))
+        print(f"normalized {changed} EPContext source attribute(s) in {model_path}")
+    else:
+        print(f"EPContext source values in {model_path}: {sources}")
+
+    verify = onnx.load(str(model_path), load_external_data=False)
+    verify_sources = []
+    for node in verify.graph.node:
+        if node.op_type == "EPContext":
+            for attr in node.attribute:
+                if attr.name == "source":
+                    verify_sources.append(attr.s.decode("utf-8", errors="replace"))
+    if not verify_sources:
+        raise RuntimeError(f"No EPContext source attribute found in {model_path}")
+    invalid = [s for s in verify_sources if s not in {"QNN", "QnnExecutionProvider"}]
+    if invalid:
+        raise RuntimeError(f"Unsupported EPContext source values remain in {model_path}: {invalid}")
+    print(f"verified EPContext source values: {verify_sources}")
 
 
 def export_qnn(model_name: str, output_dir: str) -> None:
@@ -69,13 +109,13 @@ def export_qnn(model_name: str, output_dir: str) -> None:
 
     context_onnx = target_dir / "model.onnx"
     shutil.copy2(exported, context_onnx)
+    normalize_epcontext_source(context_onnx)
 
     after_bins = {p.resolve() for p in Path(".").rglob("*.bin")}
     new_bins = sorted(after_bins - before_bins)
     if not new_bins:
         raise RuntimeError(
-            f"QNN export for {model_name} produced no external .bin file; "
-            "external EPContext generation failed"
+            f"QNN export for {model_name} produced no external .bin file; external EPContext generation failed"
         )
 
     copied_total = 0
@@ -89,17 +129,35 @@ def export_qnn(model_name: str, output_dir: str) -> None:
 
     if copied_total < 1024 * 1024:
         raise RuntimeError(
-            f"External QNN context binaries for {model_name} total only {copied_total} bytes; "
-            "expected a compiled graph substantially larger than 1 MB"
+            f"External QNN context binaries for {model_name} total only {copied_total} bytes; expected >1 MB"
         )
 
     print(f"exported {model_name} -> {context_onnx} ({context_onnx.stat().st_size} bytes)")
     print(f"external QNN context total: {copied_total} bytes")
-    print("bundle contents:")
-    for path in sorted(target_dir.iterdir()):
-        print(f"  {path.name}: {path.stat().st_size} bytes")
+
+
+def export_plain_onnx(model_name: str, target_name: str) -> None:
+    model = YOLO(model_name)
+    exported = Path(
+        model.export(
+            format="onnx",
+            imgsz=640,
+            simplify=True,
+            dynamic=False,
+            nms=True,
+            device="cpu",
+        )
+    )
+    target = Path(target_name)
+    if exported.resolve() != target.resolve():
+        shutil.copy2(exported, target)
+    if not target.exists() or target.stat().st_size <= 1024 * 1024:
+        raise RuntimeError(f"Plain ONNX export failed for {model_name}: {target}")
+    print(f"exported plain fallback {model_name} -> {target} ({target.stat().st_size} bytes)")
 
 
 patch_ultralytics_for_external_qnn()
 export_qnn("yolo26s.pt", "qnn_s_bundle")
 export_qnn("yolo26n.pt", "qnn_n_bundle")
+export_plain_onnx("yolo26s.pt", "yolo26s.onnx")
+export_plain_onnx("yolo26n.pt", "yolo26n.onnx")
