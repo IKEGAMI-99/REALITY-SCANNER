@@ -4,15 +4,57 @@ Android向けの完全ローカルAIリアルタイム物体認識HUDです。
 
 ## APKダウンロード
 
-**v0.2.1 FAST20:**
+**v0.2.2 FASTEST CAPTURE:**
 
-[REALITY-SCANNER-v0.2.1-FAST20.apk をダウンロード](https://github.com/IKEGAMI-99/REALITY-SCANNER/releases/download/v0.2.1/REALITY-SCANNER-v0.2.1-FAST20.apk)
+[REALITY-SCANNER-v0.2.2-FASTEST-CAPTURE.apk をダウンロード](https://github.com/IKEGAMI-99/REALITY-SCANNER/releases/download/v0.2.2/REALITY-SCANNER-v0.2.2-FASTEST-CAPTURE.apk)
 
-> 約341MB。YOLO26s / YOLO26n QNN external EPContext、YOLO26n 320 FAST20、YOLO26n / YOLO26s 640 float ONNX、YOLO26x互換モデルを含みます。
+> FAST20構成を維持したまま、追跡中で最も速い有効Trackのベストショットを映像左下へワイプ表示します。
 >
 > v0.1.1以降は固定debug署名を使用しているため、アプリ内UPDATEから上書き更新できます。
 
 黒背景＋グリーンのCLI / タクティカルHUDで、上部を正方形の映像領域、下部を実処理ログが流れるライブターミナルとして構成しています。
+
+## v0.2.2 FASTEST CAPTURE
+
+現在追跡している物体のうち、相対速度`REL`が最も高い有効Trackを選び、そのBBox周辺を切り出して映像領域の左下へスナップショットワイプ表示します。
+
+```text
+tracked objects
+      ↓
+quality filter
+      ↓
+fastest REL track
+      ↓
+source-frame crop
+      ↓
+FASTEST CAPTURE wipe
+```
+
+ワイプはAI推論と同じ速度では更新せず、FAST20の推論性能を優先して最大約4Hzでキャプチャを試行します。
+
+以下の条件を満たした場合だけ新しい画像へ更新します。
+
+- Trackが直近フレームで更新されている
+- `REL >= 0.025/s`
+- confidence 45%以上
+- BBoxの82%以上が画面内に残っている
+- BBox面積が小さすぎない
+- 切り出し画像が最低48px以上
+- ほぼ真っ黒 / 真っ白 / 極端に情報量の少ない切り出しではない
+
+キャプチャに失敗した場合はワイプを空にせず、**最後に正常取得できた画像をそのまま保持**します。
+
+表示例:
+
+```text
+FASTEST // PERSON #0436
+CAPTURED  REL 0.219/s
+┌──────────────────┐
+│  captured object │
+└──────────────────┘
+```
+
+CAMERA / DEMOを切り替えた場合だけ、別ソースの古いキャプチャを残さないためワイプをクリアします。
 
 ## v0.2.1 FAST20
 
@@ -111,6 +153,8 @@ BBox / vector HUD
 - Track ID / BBox / confidence
 - BBox中央からの速度ベクトル
 - 推論遅延連動HUD予測
+- FASTEST CAPTURE左下ワイプ
+- 高速Trackの品質チェック付きスナップショット保持
 - 低照度自動判定＋ヒステリシス
 - 暗所時露出補助＋AI入力デジタルゲイン
 - リアルタイム処理ログ
