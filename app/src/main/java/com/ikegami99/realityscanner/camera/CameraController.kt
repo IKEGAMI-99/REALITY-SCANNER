@@ -1,5 +1,6 @@
 package com.ikegami99.realityscanner.camera
 
+import android.graphics.Bitmap
 import android.util.Size
 import androidx.camera.core.Camera
 import androidx.camera.core.CameraSelector
@@ -17,6 +18,7 @@ import com.ikegami99.realityscanner.ui.HudOverlayView
 import java.util.concurrent.ExecutorService
 import java.util.concurrent.Executors
 import java.util.concurrent.atomic.AtomicBoolean
+import java.util.concurrent.atomic.AtomicLong
 import kotlin.math.min
 
 class CameraController(
@@ -27,13 +29,17 @@ class CameraController(
     private val hud: HudOverlayView,
     private val logger: AppLogger
 ) {
+    private enum class SourceMode { CAMERA, DEMO, STOPPED }
+
     private val analysisExecutor: ExecutorService = Executors.newSingleThreadExecutor()
     private val inferenceExecutor: ExecutorService = Executors.newSingleThreadExecutor()
     private val inferenceRunning = AtomicBoolean(false)
+    private val sourceGeneration = AtomicLong(0L)
 
     private var cameraProvider: ProcessCameraProvider? = null
     private var camera: Camera? = null
 
+    @Volatile private var sourceMode = SourceMode.STOPPED
     private var frameCounter = 0
     private var fpsWindowStart = System.nanoTime()
     @Volatile private var cameraFps = 0f
@@ -46,14 +52,22 @@ class CameraController(
     private var aiWindowStart = System.nanoTime()
 
     fun start() {
+        sourceMode = SourceMode.CAMERA
+        sourceGeneration.incrementAndGet()
+        trackManager.clear()
+        hud.setTracks(emptyList())
         frameCounter = 0
         inferenceCount = 0
+        cameraFps = 0f
+        aiFps = 0f
+        lastInferenceNanos = 0L
         fpsWindowStart = System.nanoTime()
         aiWindowStart = System.nanoTime()
 
         val future = ProcessCameraProvider.getInstance(previewView.context)
         future.addListener({
             try {
+                if (sourceMode != SourceMode.CAMERA) return@addListener
                 val provider = future.get()
                 cameraProvider = provider
 
@@ -86,20 +100,37 @@ class CameraController(
         }, ContextCompat.getMainExecutor(previewView.context))
     }
 
+    /**
+     * Switches inference ownership from CameraX to the demo-frame pump while keeping the detector
+     * and inference executor alive. Any camera inference that was already in flight is invalidated
+     * by sourceGeneration and is not allowed to repopulate the HUD after the switch.
+     */
     fun pause() {
+        sourceMode = SourceMode.DEMO
+        sourceGeneration.incrementAndGet()
         cameraProvider?.unbindAll()
         camera = null
         cameraFps = 0f
         aiFps = 0f
-        logger.info("CAMERA", "preview paused // detector retained")
+        lastInferenceNanos = 0L
+        lastLowLight = false
+        trackManager.clear()
+        hud.setTracks(emptyList())
+        publishHud()
+        logger.info("CAMERA", "preview paused // detector retained // demo inference armed")
     }
 
     private fun analyze(image: ImageProxy) {
+        if (sourceMode != SourceMode.CAMERA) {
+            image.close()
+            return
+        }
+
+        val generation = sourceGeneration.get()
         val now = System.nanoTime()
         updateCameraFps(now)
         val luma = calculateLuma(image)
 
-        // Hysteresis prevents AUTO from flipping ACTIVE/STANDBY every frame around one threshold.
         val lowLight = if (lastLowLight) luma < LOW_LIGHT_EXIT_LUMA else luma < LOW_LIGHT_ENTER_LUMA
         if (lowLight != lastLowLight) {
             lastLowLight = lowLight
@@ -134,6 +165,58 @@ class CameraController(
         }
         image.close()
 
+        runInference(
+            bitmap = bitmap,
+            rotationDegrees = rotationDegrees,
+            lowLightGain = lowLightGain,
+            sourceFrameNanos = sourceFrameNanos,
+            expectedMode = SourceMode.CAMERA,
+            generation = generation,
+            logTag = "YOLO"
+        )
+    }
+
+    /**
+     * Takes ownership of [bitmap]. The bitmap is always recycled by this controller, including
+     * when the detector is busy and the frame is dropped. This lets the PixelCopy demo pump submit
+     * frames at display cadence without building an unbounded queue behind a slow detector.
+     */
+    fun submitDemoFrame(bitmap: Bitmap): Boolean {
+        val now = System.nanoTime()
+        if (sourceMode != SourceMode.DEMO) {
+            bitmap.recycle()
+            return false
+        }
+
+        val inferDue = now - lastInferenceNanos >= DEMO_INFERENCE_INTERVAL_NANOS
+        if (!inferDue || !inferenceRunning.compareAndSet(false, true)) {
+            bitmap.recycle()
+            return false
+        }
+
+        lastInferenceNanos = now
+        val generation = sourceGeneration.get()
+        runInference(
+            bitmap = bitmap,
+            rotationDegrees = 0,
+            lowLightGain = 1f,
+            sourceFrameNanos = now,
+            expectedMode = SourceMode.DEMO,
+            generation = generation,
+            logTag = "DEMO-YOLO"
+        )
+        return true
+    }
+
+    private fun runInference(
+        bitmap: Bitmap,
+        rotationDegrees: Int,
+        lowLightGain: Float,
+        sourceFrameNanos: Long,
+        expectedMode: SourceMode,
+        generation: Long,
+        logTag: String
+    ) {
         inferenceExecutor.execute {
             val started = System.nanoTime()
             try {
@@ -142,14 +225,21 @@ class CameraController(
                     rotationDegrees = rotationDegrees,
                     lowLightGain = lowLightGain
                 )
-
                 val completed = System.nanoTime()
+
+                // A result from the previous source must never re-enter the HUD after a
+                // CAMERA <-> DEMO transition.
+                if (sourceMode != expectedMode || sourceGeneration.get() != generation) {
+                    logger.info(logTag, "stale inference discarded // source switched")
+                    return@execute
+                }
+
                 val tracks = trackManager.update(detections, sourceFrameNanos)
                 lastInferenceMs = (completed - started) / 1_000_000f
                 updateAiFps(completed)
 
                 logger.info(
-                    "YOLO",
+                    logTag,
                     "objects=${detections.size} tracks=${tracks.size} " +
                         "infer=${"%.1f".format(lastInferenceMs)}ms backend=${detector.backendName}"
                 )
@@ -162,11 +252,13 @@ class CameraController(
                 }
 
                 previewView.post {
-                    hud.setTracks(tracks)
-                    publishHud()
+                    if (sourceMode == expectedMode && sourceGeneration.get() == generation) {
+                        hud.setTracks(tracks)
+                        publishHud()
+                    }
                 }
             } catch (t: Throwable) {
-                logger.error("ANALYSIS", "${t.javaClass.simpleName}: ${t.message}")
+                logger.error(logTag, "${t.javaClass.simpleName}: ${t.message}")
             } finally {
                 bitmap.recycle()
                 inferenceRunning.set(false)
@@ -196,14 +288,20 @@ class CameraController(
     }
 
     private fun publishHud() {
+        val mode = sourceMode
         previewView.post {
+            val backend = when (mode) {
+                SourceMode.DEMO -> "DEMO/${detector.backendName}"
+                SourceMode.CAMERA -> detector.backendName
+                SourceMode.STOPPED -> "STOPPED"
+            }
             hud.setStats(
                 HudOverlayView.Stats(
-                    cameraFps = cameraFps,
+                    cameraFps = if (mode == SourceMode.CAMERA) cameraFps else 0f,
                     aiFps = aiFps,
                     inferenceMs = lastInferenceMs,
-                    lowLight = lastLowLight,
-                    backend = detector.backendName
+                    lowLight = mode == SourceMode.CAMERA && lastLowLight,
+                    backend = backend
                 )
             )
         }
@@ -241,16 +339,19 @@ class CameraController(
     }
 
     fun stop() {
+        sourceMode = SourceMode.STOPPED
+        sourceGeneration.incrementAndGet()
         cameraProvider?.unbindAll()
         camera = null
+        trackManager.clear()
         analysisExecutor.shutdownNow()
         inferenceExecutor.shutdownNow()
         detector.close()
     }
 
     companion object {
-        // QNN can run far faster than the old XNNPACK path, so don't artificially cap it at ~8 FPS.
         private const val INFERENCE_INTERVAL_NANOS = 40_000_000L
+        private const val DEMO_INFERENCE_INTERVAL_NANOS = 80_000_000L
         private const val LOW_LIGHT_ENTER_LUMA = 45f
         private const val LOW_LIGHT_EXIT_LUMA = 55f
     }
