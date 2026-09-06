@@ -92,25 +92,25 @@ jobs:
 
       - name: Rename APK
         run: |
-          cp app/build/outputs/apk/debug/app-debug.apk REALITY-SCANNER-v0.1.8-DEMO-FIX.apk
-          test -s REALITY-SCANNER-v0.1.8-DEMO-FIX.apk
-          ls -lh REALITY-SCANNER-v0.1.8-DEMO-FIX.apk
+          cp app/build/outputs/apk/debug/app-debug.apk REALITY-SCANNER-v0.1.9-DEMO-AI.apk
+          test -s REALITY-SCANNER-v0.1.9-DEMO-AI.apk
+          ls -lh REALITY-SCANNER-v0.1.9-DEMO-AI.apk
 
       - uses: actions/upload-artifact@v4
         with:
-          name: reality-scanner-v0.1.8
-          path: REALITY-SCANNER-v0.1.8-DEMO-FIX.apk
+          name: reality-scanner-v0.1.9
+          path: REALITY-SCANNER-v0.1.9-DEMO-AI.apk
           retention-days: 30
 
       - name: Publish GitHub Release APK
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
-          NOTES="Fixes YouTube demo playback by using an explicit HTTPS app origin, YouTube IFrame API event bridge, referrer policy, and player error reporting including codes 101/150/153. Reduces bbox drift by adding a velocity dead-zone and shortening visual extrapolation from 0.60s to 0.18s, with stationary boxes held fixed."
-          if gh release view v0.1.8 >/dev/null 2>&1; then
-            gh release upload v0.1.8 REALITY-SCANNER-v0.1.8-DEMO-FIX.apk --clobber
+          NOTES="Runs live YOLO inference on YouTube demo frames. A PixelCopy latest-frame pump captures the square demo area and submits frames to the same detector used by CameraX without queueing stale frames. CAMERA/DEMO source generations prevent in-flight camera results from repopulating the HUD after switching modes. Keeps the v0.1.8 YouTube playback and bbox drift fixes."
+          if gh release view v0.1.9 >/dev/null 2>&1; then
+            gh release upload v0.1.9 REALITY-SCANNER-v0.1.9-DEMO-AI.apk --clobber
           else
-            gh release create v0.1.8 REALITY-SCANNER-v0.1.8-DEMO-FIX.apk \
-              --title "REALITY SCANNER v0.1.8" \
+            gh release create v0.1.9 REALITY-SCANNER-v0.1.9-DEMO-AI.apk \
+              --title "REALITY SCANNER v0.1.9" \
               --notes "$NOTES"
           fi
