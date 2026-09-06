@@ -1,6 +1,8 @@
 package com.ikegami99.realityscanner.camera
 
 import android.graphics.Bitmap
+import android.graphics.Matrix
+import android.graphics.RectF
 import android.util.Size
 import androidx.camera.core.Camera
 import androidx.camera.core.CameraSelector
@@ -14,12 +16,15 @@ import androidx.lifecycle.LifecycleOwner
 import com.ikegami99.realityscanner.detection.Detector
 import com.ikegami99.realityscanner.logging.AppLogger
 import com.ikegami99.realityscanner.tracking.TrackManager
+import com.ikegami99.realityscanner.tracking.TrackSnapshot
 import com.ikegami99.realityscanner.ui.HudOverlayView
 import java.util.concurrent.ExecutorService
 import java.util.concurrent.Executors
 import java.util.concurrent.atomic.AtomicBoolean
 import java.util.concurrent.atomic.AtomicLong
+import kotlin.math.max
 import kotlin.math.min
+import kotlin.math.roundToInt
 
 class CameraController(
     private val lifecycleOwner: LifecycleOwner,
@@ -51,16 +56,22 @@ class CameraController(
     private var inferenceCount = 0
     private var aiWindowStart = System.nanoTime()
 
+    private var lastWipeCaptureAttemptNanos = 0L
+    private var lastWipeTrackId = -1
+
     fun start() {
         sourceMode = SourceMode.CAMERA
         sourceGeneration.incrementAndGet()
         trackManager.clear()
         hud.setTracks(emptyList())
+        hud.clearFastestCapture()
         frameCounter = 0
         inferenceCount = 0
         cameraFps = 0f
         aiFps = 0f
         lastInferenceNanos = 0L
+        lastWipeCaptureAttemptNanos = 0L
+        lastWipeTrackId = -1
         fpsWindowStart = System.nanoTime()
         aiWindowStart = System.nanoTime()
 
@@ -111,8 +122,11 @@ class CameraController(
         lastLowLight = false
         inferenceCount = 0
         aiWindowStart = System.nanoTime()
+        lastWipeCaptureAttemptNanos = 0L
+        lastWipeTrackId = -1
         trackManager.clear()
         hud.setTracks(emptyList())
+        hud.clearFastestCapture()
         publishHud()
         logger.info("CAMERA", "preview paused // detector retained // demo inference armed")
     }
@@ -228,6 +242,16 @@ class CameraController(
                 lastInferenceMs = (completed - started) / 1_000_000f
                 updateAiFps(completed)
 
+                maybeUpdateFastestCapture(
+                    bitmap = bitmap,
+                    rotationDegrees = rotationDegrees,
+                    tracks = tracks,
+                    sourceFrameNanos = sourceFrameNanos,
+                    completedNanos = completed,
+                    expectedMode = expectedMode,
+                    generation = generation
+                )
+
                 logger.info(
                     logTag,
                     "objects=${detections.size} tracks=${tracks.size} " +
@@ -255,6 +279,176 @@ class CameraController(
             }
         }
     }
+
+    private fun maybeUpdateFastestCapture(
+        bitmap: Bitmap,
+        rotationDegrees: Int,
+        tracks: List<TrackSnapshot>,
+        sourceFrameNanos: Long,
+        completedNanos: Long,
+        expectedMode: SourceMode,
+        generation: Long
+    ) {
+        if (completedNanos - lastWipeCaptureAttemptNanos < WIPE_CAPTURE_INTERVAL_NANOS) return
+        lastWipeCaptureAttemptNanos = completedNanos
+
+        val target = tracks.asSequence()
+            .filter { sourceFrameNanos - it.lastSeenNanos <= MAX_CAPTURE_TRACK_AGE_NANOS }
+            .filter { it.relativeSpeed >= MIN_CAPTURE_SPEED }
+            .filter { it.score >= MIN_CAPTURE_SCORE }
+            .filter { normalizedVisibleRatio(it.box) >= MIN_CAPTURE_VISIBLE_RATIO }
+            .filter { visibleArea(it.box) >= MIN_CAPTURE_NORMALIZED_AREA }
+            .maxByOrNull { it.relativeSpeed }
+            ?: return
+
+        val capture = createCapture(bitmap, rotationDegrees, target) ?: return
+
+        val targetChanged = target.id != lastWipeTrackId
+        lastWipeTrackId = target.id
+        previewView.post {
+            if (sourceMode == expectedMode && sourceGeneration.get() == generation) {
+                hud.setFastestCapture(capture, target.label, target.id, target.relativeSpeed)
+            } else {
+                if (!capture.isRecycled) capture.recycle()
+            }
+        }
+
+        if (targetChanged) {
+            logger.info(
+                "CAPTURE",
+                "fastest locked // #${target.id} ${target.label} rel=${"%.3f".format(target.relativeSpeed)}/s"
+            )
+        }
+    }
+
+    private fun createCapture(
+        source: Bitmap,
+        rotationDegrees: Int,
+        track: TrackSnapshot
+    ): Bitmap? {
+        val clipped = clipNormalized(track.box)
+        if (clipped.width() <= 0f || clipped.height() <= 0f) return null
+
+        val padX = clipped.width() * CAPTURE_PADDING_RATIO
+        val padY = clipped.height() * CAPTURE_PADDING_RATIO
+        val captureBox = RectF(
+            (clipped.left - padX).coerceAtLeast(0f),
+            (clipped.top - padY).coerceAtLeast(0f),
+            (clipped.right + padX).coerceAtMost(1f),
+            (clipped.bottom + padY).coerceAtMost(1f)
+        )
+
+        val oriented = rotateForCapture(source, rotationDegrees)
+        try {
+            val squareSize = min(oriented.width, oriented.height)
+            if (squareSize <= 2) return null
+            val offsetX = (oriented.width - squareSize) / 2
+            val offsetY = (oriented.height - squareSize) / 2
+
+            val left = (offsetX + captureBox.left * squareSize).roundToInt()
+                .coerceIn(offsetX, offsetX + squareSize - 1)
+            val top = (offsetY + captureBox.top * squareSize).roundToInt()
+                .coerceIn(offsetY, offsetY + squareSize - 1)
+            val right = (offsetX + captureBox.right * squareSize).roundToInt()
+                .coerceIn(left + 1, offsetX + squareSize)
+            val bottom = (offsetY + captureBox.bottom * squareSize).roundToInt()
+                .coerceIn(top + 1, offsetY + squareSize)
+
+            val cropWidth = right - left
+            val cropHeight = bottom - top
+            if (cropWidth < MIN_CAPTURE_PIXELS || cropHeight < MIN_CAPTURE_PIXELS) return null
+
+            val rawCrop = try {
+                Bitmap.createBitmap(oriented, left, top, cropWidth, cropHeight)
+            } catch (_: Throwable) {
+                return null
+            }
+
+            val scaled = scaleCaptureDown(rawCrop)
+            if (scaled !== rawCrop && !rawCrop.isRecycled) rawCrop.recycle()
+
+            if (!captureLooksUsable(scaled)) {
+                if (!scaled.isRecycled) scaled.recycle()
+                return null
+            }
+            return scaled
+        } finally {
+            if (oriented !== source && !oriented.isRecycled) oriented.recycle()
+        }
+    }
+
+    private fun rotateForCapture(bitmap: Bitmap, rotationDegrees: Int): Bitmap {
+        val normalized = ((rotationDegrees % 360) + 360) % 360
+        if (normalized == 0) return bitmap
+        return try {
+            val matrix = Matrix().apply { postRotate(normalized.toFloat()) }
+            Bitmap.createBitmap(bitmap, 0, 0, bitmap.width, bitmap.height, matrix, true)
+        } catch (_: Throwable) {
+            bitmap
+        }
+    }
+
+    private fun scaleCaptureDown(bitmap: Bitmap): Bitmap {
+        val maxSide = max(bitmap.width, bitmap.height)
+        if (maxSide <= MAX_CAPTURE_OUTPUT_PIXELS) return bitmap
+        val scale = MAX_CAPTURE_OUTPUT_PIXELS.toFloat() / maxSide.toFloat()
+        val width = (bitmap.width * scale).roundToInt().coerceAtLeast(1)
+        val height = (bitmap.height * scale).roundToInt().coerceAtLeast(1)
+        return Bitmap.createScaledBitmap(bitmap, width, height, true)
+    }
+
+    private fun captureLooksUsable(bitmap: Bitmap): Boolean {
+        if (bitmap.width < MIN_CAPTURE_PIXELS || bitmap.height < MIN_CAPTURE_PIXELS) return false
+
+        val stepX = max(1, bitmap.width / 14)
+        val stepY = max(1, bitmap.height / 14)
+        var count = 0
+        var sum = 0.0
+        var sumSq = 0.0
+
+        var y = stepY / 2
+        while (y < bitmap.height) {
+            var x = stepX / 2
+            while (x < bitmap.width) {
+                val color = bitmap.getPixel(x, y)
+                val r = (color shr 16) and 0xFF
+                val g = (color shr 8) and 0xFF
+                val b = color and 0xFF
+                val luma = r * 0.2126 + g * 0.7152 + b * 0.0722
+                sum += luma
+                sumSq += luma * luma
+                count++
+                x += stepX
+            }
+            y += stepY
+        }
+
+        if (count < 16) return false
+        val mean = sum / count
+        val variance = sumSq / count - mean * mean
+        return mean in MIN_CAPTURE_MEAN_LUMA..MAX_CAPTURE_MEAN_LUMA &&
+            variance >= MIN_CAPTURE_LUMA_VARIANCE
+    }
+
+    private fun normalizedVisibleRatio(box: RectF): Float {
+        val fullWidth = max(0f, box.width())
+        val fullHeight = max(0f, box.height())
+        val fullArea = fullWidth * fullHeight
+        if (fullArea <= 0f) return 0f
+        return visibleArea(box) / fullArea
+    }
+
+    private fun visibleArea(box: RectF): Float {
+        val clipped = clipNormalized(box)
+        return max(0f, clipped.width()) * max(0f, clipped.height())
+    }
+
+    private fun clipNormalized(box: RectF): RectF = RectF(
+        box.left.coerceIn(0f, 1f),
+        box.top.coerceIn(0f, 1f),
+        box.right.coerceIn(0f, 1f),
+        box.bottom.coerceIn(0f, 1f)
+    )
 
     private fun updateCameraFps(now: Long) {
         frameCounter++
@@ -334,6 +528,7 @@ class CameraController(
         cameraProvider?.unbindAll()
         camera = null
         trackManager.clear()
+        hud.clearFastestCapture()
         analysisExecutor.shutdownNow()
         inferenceExecutor.shutdownNow()
         detector.close()
@@ -344,5 +539,20 @@ class CameraController(
         private const val DEMO_INFERENCE_INTERVAL_NANOS = 40_000_000L
         private const val LOW_LIGHT_ENTER_LUMA = 45f
         private const val LOW_LIGHT_EXIT_LUMA = 55f
+
+        // Wipe capture is intentionally much slower than AI inference so FAST20 performance is not
+        // consumed by bitmap rotation/cropping. Failed captures never replace the last good image.
+        private const val WIPE_CAPTURE_INTERVAL_NANOS = 250_000_000L
+        private const val MAX_CAPTURE_TRACK_AGE_NANOS = 180_000_000L
+        private const val MIN_CAPTURE_SPEED = 0.025f
+        private const val MIN_CAPTURE_SCORE = 0.45f
+        private const val MIN_CAPTURE_VISIBLE_RATIO = 0.82f
+        private const val MIN_CAPTURE_NORMALIZED_AREA = 0.0025f
+        private const val CAPTURE_PADDING_RATIO = 0.18f
+        private const val MIN_CAPTURE_PIXELS = 48
+        private const val MAX_CAPTURE_OUTPUT_PIXELS = 360
+        private const val MIN_CAPTURE_MEAN_LUMA = 10.0
+        private const val MAX_CAPTURE_MEAN_LUMA = 247.0
+        private const val MIN_CAPTURE_LUMA_VARIANCE = 14.0
     }
 }
