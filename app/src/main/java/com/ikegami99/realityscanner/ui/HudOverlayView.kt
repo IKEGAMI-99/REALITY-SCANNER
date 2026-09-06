@@ -105,7 +105,13 @@ class HudOverlayView @JvmOverloads constructor(
     private fun drawTrack(canvas: Canvas, track: TrackSnapshot, now: Long) {
         val ageSeconds = ((now - track.lastSeenNanos) / 1_000_000_000f).coerceAtLeast(0f)
         val moving = track.relativeSpeed >= MIN_VISUAL_SPEED
-        val dt = if (moving) ageSeconds.coerceAtMost(MAX_EXTRAPOLATION_SECONDS) else 0f
+
+        // Track timestamps refer to the captured source frame, not inference completion. Allow
+        // enough look-ahead to cover the measured detector latency, while the tracker dead-zone
+        // prevents stationary boxes from drifting.
+        val latencyBudget = (stats.inferenceMs / 1000f * LATENCY_COMPENSATION_MULTIPLIER)
+            .coerceIn(MIN_EXTRAPOLATION_SECONDS, MAX_EXTRAPOLATION_SECONDS)
+        val dt = if (moving) ageSeconds.coerceAtMost(latencyBudget) else 0f
         val dx = track.velocityX * dt
         val dy = track.velocityY * dt
 
@@ -124,7 +130,7 @@ class HudOverlayView @JvmOverloads constructor(
         val label = "${track.label.uppercase()} #${track.id.toString().padStart(4, '0')}"
         val predictionFlag = when {
             stale -> " HOLD"
-            moving && ageSeconds > 0.08f -> " PRED"
+            moving && ageSeconds > 0.06f -> " PRED"
             else -> ""
         }
         val metrics = "CONF %.1f%%  REL %.3f/s%s".format(
@@ -178,9 +184,11 @@ class HudOverlayView @JvmOverloads constructor(
     }
 
     companion object {
-        private const val MAX_EXTRAPOLATION_SECONDS = 0.18f
-        private const val STALE_SECONDS = 0.24f
-        private const val VECTOR_LOOKAHEAD_SECONDS = 0.35f
-        private const val MIN_VISUAL_SPEED = 0.025f
+        private const val MIN_EXTRAPOLATION_SECONDS = 0.10f
+        private const val MAX_EXTRAPOLATION_SECONDS = 0.32f
+        private const val LATENCY_COMPENSATION_MULTIPLIER = 1.18f
+        private const val STALE_SECONDS = 0.42f
+        private const val VECTOR_LOOKAHEAD_SECONDS = 0.28f
+        private const val MIN_VISUAL_SPEED = 0.012f
     }
 }
