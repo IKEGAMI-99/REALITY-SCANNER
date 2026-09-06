@@ -25,6 +25,7 @@ import androidx.core.content.ContextCompat
 import androidx.core.view.ViewCompat
 import androidx.core.view.WindowInsetsCompat
 import com.ikegami99.realityscanner.camera.CameraController
+import com.ikegami99.realityscanner.demo.DemoFramePump
 import com.ikegami99.realityscanner.detection.DetectorCascade
 import com.ikegami99.realityscanner.detection.YoloFastOnnxDetector
 import com.ikegami99.realityscanner.detection.YoloOnnxDetector
@@ -51,6 +52,7 @@ class MainActivity : ComponentActivity() {
     private lateinit var updater: AppUpdater
     private lateinit var terminal: TerminalView
     private lateinit var cameraController: CameraController
+    private lateinit var demoFramePump: DemoFramePump
     private lateinit var header: TextView
     private lateinit var preview: PreviewView
     private lateinit var hud: HudOverlayView
@@ -115,7 +117,9 @@ class MainActivity : ComponentActivity() {
             implementationMode = PreviewView.ImplementationMode.PERFORMANCE
         }
         demoView = YouTubeDemoView(this).apply {
-            onVideoLoaded = { id -> logger.info("DEMO", "YouTube loaded // id=$id // crop=cover-square") }
+            onVideoLoaded = { id ->
+                logger.info("DEMO", "YouTube loaded // id=$id // crop=cover-square // AI=live")
+            }
             onVideoError = { message -> logger.error("DEMO", message) }
         }
         hud = HudOverlayView(this)
@@ -167,6 +171,12 @@ class MainActivity : ComponentActivity() {
             hud = hud,
             logger = logger
         )
+        demoFramePump = DemoFramePump(
+            window = window,
+            sourceView = demoView,
+            cameraController = cameraController,
+            logger = logger
+        )
 
         terminal.onExport = { exportLogs() }
         terminal.onUpdate = { checkUpdate(manual = true) }
@@ -178,7 +188,7 @@ class MainActivity : ComponentActivity() {
         logger.info("SYSTEM", "device=${android.os.Build.MANUFACTURER} ${android.os.Build.MODEL}")
         logger.info("SYSTEM", "offline hybrid inference pipeline ready")
         logger.info("MODEL", "priority=QNN-S(ext) > QNN-N(ext) > YOLO26N-small > YOLO26X-compat")
-        logger.info("DEMO", "YouTube demo ready // square center-crop display")
+        logger.info("DEMO", "YouTube demo ready // square crop // PixelCopy AI inference")
 
         ensureCamera()
         checkUpdate(manual = false)
@@ -187,7 +197,7 @@ class MainActivity : ComponentActivity() {
     private fun renderHeader() {
         val update = availableUpdateVersion?.let { " // UPDATE $it" }.orEmpty()
         val mode = if (isDemoMode) {
-            "MODE DEMO  SOURCE YOUTUBE  CROP COVER"
+            "MODE DEMO  YOUTUBE  AI LIVE  CROP COVER"
         } else {
             "MODE HYBRID  LOW LIGHT AUTO"
         }
@@ -207,7 +217,10 @@ class MainActivity : ComponentActivity() {
 
         AlertDialog.Builder(this)
             .setTitle("YOUTUBE DEMO")
-            .setMessage("YouTube URLまたは11文字のVideo IDを入力。映像は正方形HUD領域いっぱいに中央クロップします。")
+            .setMessage(
+                "YouTube URLまたは11文字のVideo IDを入力。映像を正方形に中央クロップし、" +
+                    "表示中の動画フレームへYOLOをリアルタイム実行します。"
+            )
             .setView(input)
             .setNegativeButton("CANCEL", null)
             .setPositiveButton("PLAY") { _, _ ->
@@ -231,28 +244,25 @@ class MainActivity : ComponentActivity() {
         preview.visibility = View.GONE
         demoView.visibility = View.VISIBLE
         hud.setTracks(emptyList())
-        hud.setStats(
-            HudOverlayView.Stats(
-                cameraFps = 0f,
-                aiFps = 0f,
-                inferenceMs = 0f,
-                lowLight = false,
-                backend = "DEMO/YOUTUBE"
-            )
-        )
         terminal.setDemoActive(true)
         renderHeader()
-        logger.info("DEMO", "mode active // camera paused // YouTube center-crop cover")
+        demoFramePump.start()
+        logger.info(
+            "DEMO",
+            "mode active // camera paused // YouTube center-crop cover // live YOLO enabled"
+        )
         return true
     }
 
     private fun exitDemoMode() {
         if (!isDemoMode) return
 
+        demoFramePump.stop()
         isDemoMode = false
         demoView.stopPlayback()
         demoView.visibility = View.GONE
         preview.visibility = View.VISIBLE
+        hud.setTracks(emptyList())
         terminal.setDemoActive(false)
         renderHeader()
         logger.info("DEMO", "mode stopped // restoring live camera")
@@ -445,6 +455,7 @@ class MainActivity : ComponentActivity() {
     }
 
     override fun onDestroy() {
+        if (::demoFramePump.isInitialized) demoFramePump.stop()
         if (::demoView.isInitialized) demoView.release()
         if (::cameraController.isInitialized) cameraController.stop()
         super.onDestroy()
