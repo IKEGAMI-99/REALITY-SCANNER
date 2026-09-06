@@ -64,13 +64,14 @@ jobs:
           mkdir -p app/src/main/assets/models
           mv yolo26x.onnx app/src/main/assets/models/yolo26x.onnx
 
-      - name: Export Snapdragon QNN and fast fallback models
+      - name: Export Snapdragon QNN and FAST20 models
         run: |
           python scripts/export_yolo26_qnn.py
           test -s qnn_s_bundle/model.onnx
           test -s qnn_n_bundle/model.onnx
           test "$(find qnn_s_bundle -maxdepth 1 -name '*.bin' -type f -size +0c | wc -l)" -gt 0
           test "$(find qnn_n_bundle -maxdepth 1 -name '*.bin' -type f -size +0c | wc -l)" -gt 0
+          test -s yolo26n_320.onnx
           test -s yolo26n.onnx
           test -s yolo26s.onnx
 
@@ -78,6 +79,7 @@ jobs:
           mkdir -p app/src/main/assets/models/qnn_s app/src/main/assets/models/qnn_n
           cp -a qnn_s_bundle/. app/src/main/assets/models/qnn_s/
           cp -a qnn_n_bundle/. app/src/main/assets/models/qnn_n/
+          cp yolo26n_320.onnx app/src/main/assets/models/yolo26n_320.onnx
           cp yolo26n.onnx app/src/main/assets/models/yolo26n.onnx
           cp yolo26s.onnx app/src/main/assets/models/yolo26s.onnx
 
@@ -85,6 +87,8 @@ jobs:
           ls -lh app/src/main/assets/models/qnn_s/
           echo "QNN-N bundle:"
           ls -lh app/src/main/assets/models/qnn_n/
+          echo "FAST20 model:"
+          ls -lh app/src/main/assets/models/yolo26n_320.onnx
           echo "All models:"
           du -ah app/src/main/assets/models/ | sort -h | tail -30
 
@@ -93,25 +97,25 @@ jobs:
 
       - name: Rename APK
         run: |
-          cp app/build/outputs/apk/debug/app-debug.apk REALITY-SCANNER-v0.2.0-TRACK-NPU-GPU.apk
-          test -s REALITY-SCANNER-v0.2.0-TRACK-NPU-GPU.apk
-          ls -lh REALITY-SCANNER-v0.2.0-TRACK-NPU-GPU.apk
+          cp app/build/outputs/apk/debug/app-debug.apk REALITY-SCANNER-v0.2.1-FAST20.apk
+          test -s REALITY-SCANNER-v0.2.1-FAST20.apk
+          ls -lh REALITY-SCANNER-v0.2.1-FAST20.apk
 
       - uses: actions/upload-artifact@v4
         with:
-          name: reality-scanner-v0.2.0
-          path: REALITY-SCANNER-v0.2.0-TRACK-NPU-GPU.apk
+          name: reality-scanner-v0.2.1
+          path: REALITY-SCANNER-v0.2.1-FAST20.apk
           retention-days: 30
 
       - name: Publish GitHub Release APK
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
-          NOTES="Improves live/demo tracking with class-tolerant greedy association, alpha-beta motion filtering, label voting, false-positive confirmation, shorter stale-track lifetime, and detector-latency HUD compensation. Normalizes QNN EPContext source metadata for current ORT QNN compatibility and adds a QNN GPU float-model path before CPU fallback."
-          if gh release view v0.2.0 >/dev/null 2>&1; then
-            gh release upload v0.2.0 REALITY-SCANNER-v0.2.0-TRACK-NPU-GPU.apk --clobber
+          NOTES="FAST20 speed-first build. Adds YOLO26n 320x320 QNN-GPU/CPU fallback (~1/4 pixel compute vs 640), reduces YouTube PixelCopy cadence from 100ms to 40ms and demo inference gate from 80ms to 40ms, while retaining v0.2.0 tracking improvements. Targets roughly 15-20 AI FPS on POCO F7 Ultra when QNN GPU is active; exact rate depends on device temperature and scene."
+          if gh release view v0.2.1 >/dev/null 2>&1; then
+            gh release upload v0.2.1 REALITY-SCANNER-v0.2.1-FAST20.apk --clobber
           else
-            gh release create v0.2.0 REALITY-SCANNER-v0.2.0-TRACK-NPU-GPU.apk \
-              --title "REALITY SCANNER v0.2.0" \
+            gh release create v0.2.1 REALITY-SCANNER-v0.2.1-FAST20.apk \
+              --title "REALITY SCANNER v0.2.1 FAST20" \
               --notes "$NOTES"
           fi
