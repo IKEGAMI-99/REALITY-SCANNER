@@ -43,12 +43,6 @@ def patch_ultralytics_for_external_qnn() -> None:
 
 
 def normalize_epcontext_source(model_path: Path) -> None:
-    """Normalize the EPContext source string for current ORT QNN compatibility.
-
-    Ultralytics/ORT export can emit `QNNExecutionProvider`, while current EPContext design accepts
-    `QNN` or `QnnExecutionProvider`. The mismatch causes Android ORT to reject the context before
-    QNN HTP even attempts to load it.
-    """
     model = onnx.load(str(model_path), load_external_data=False)
     changed = 0
     sources = []
@@ -136,12 +130,12 @@ def export_qnn(model_name: str, output_dir: str) -> None:
     print(f"external QNN context total: {copied_total} bytes")
 
 
-def export_plain_onnx(model_name: str, target_name: str) -> None:
+def export_plain_onnx(model_name: str, target_name: str, imgsz: int = 640) -> None:
     model = YOLO(model_name)
     exported = Path(
         model.export(
             format="onnx",
-            imgsz=640,
+            imgsz=imgsz,
             simplify=True,
             dynamic=False,
             nms=True,
@@ -153,11 +147,14 @@ def export_plain_onnx(model_name: str, target_name: str) -> None:
         shutil.copy2(exported, target)
     if not target.exists() or target.stat().st_size <= 1024 * 1024:
         raise RuntimeError(f"Plain ONNX export failed for {model_name}: {target}")
-    print(f"exported plain fallback {model_name} -> {target} ({target.stat().st_size} bytes)")
+    print(f"exported plain fallback {model_name} imgsz={imgsz} -> {target} ({target.stat().st_size} bytes)")
 
 
 patch_ultralytics_for_external_qnn()
 export_qnn("yolo26s.pt", "qnn_s_bundle")
 export_qnn("yolo26n.pt", "qnn_n_bundle")
-export_plain_onnx("yolo26s.pt", "yolo26s.onnx")
-export_plain_onnx("yolo26n.pt", "yolo26n.onnx")
+export_plain_onnx("yolo26s.pt", "yolo26s.onnx", 640)
+export_plain_onnx("yolo26n.pt", "yolo26n.onnx", 640)
+# Speed-first model for ~20 FPS on the POCO F7 Ultra QNN-GPU path.
+# 320px is ~1/4 the pixel compute of 640px while keeping the same YOLO26n weights.
+export_plain_onnx("yolo26n.pt", "yolo26n_320.onnx", 320)
