@@ -1,11 +1,14 @@
 package com.ikegami99.realityscanner.ui
 
 import android.content.Context
+import android.graphics.Bitmap
 import android.graphics.Canvas
 import android.graphics.Color
 import android.graphics.Paint
+import android.graphics.Rect
 import android.graphics.RectF
 import android.graphics.Typeface
+import android.os.Looper
 import android.util.AttributeSet
 import android.view.View
 import com.ikegami99.realityscanner.tracking.TrackSnapshot
@@ -27,9 +30,16 @@ class HudOverlayView @JvmOverloads constructor(
         val backend: String = "INITIALIZING"
     )
 
+    private data class FastestCaptureMeta(
+        val label: String,
+        val id: Int,
+        val speed: Float
+    )
+
     private val green = Color.rgb(112, 255, 112)
     private val dimGreen = Color.rgb(42, 150, 62)
     private val blackGlass = Color.argb(185, 0, 10, 1)
+    private val captureGlass = Color.argb(222, 0, 8, 1)
     private val warning = Color.rgb(205, 255, 92)
 
     private val linePaint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
@@ -51,9 +61,16 @@ class HudOverlayView @JvmOverloads constructor(
         color = blackGlass
         style = Paint.Style.FILL
     }
+    private val capturePanelPaint = Paint().apply {
+        color = captureGlass
+        style = Paint.Style.FILL
+    }
+    private val imagePaint = Paint(Paint.ANTI_ALIAS_FLAG or Paint.FILTER_BITMAP_FLAG)
 
     @Volatile private var tracks: List<TrackSnapshot> = emptyList()
     @Volatile private var stats = Stats()
+    private var fastestBitmap: Bitmap? = null
+    private var fastestMeta: FastestCaptureMeta? = null
     private var scanPhase = 0f
 
     fun setTracks(value: List<TrackSnapshot>) {
@@ -66,6 +83,36 @@ class HudOverlayView @JvmOverloads constructor(
         postInvalidateOnAnimation()
     }
 
+    /**
+     * Takes ownership of [bitmap]. The previous successful capture stays visible until a new
+     * successful capture arrives. Callers should never pass failed/placeholder crops here.
+     */
+    fun setFastestCapture(bitmap: Bitmap, label: String, id: Int, speed: Float) {
+        val applyCapture = {
+            fastestBitmap?.let { old ->
+                if (old !== bitmap && !old.isRecycled) old.recycle()
+            }
+            fastestBitmap = bitmap
+            fastestMeta = FastestCaptureMeta(label, id, speed)
+            postInvalidateOnAnimation()
+        }
+        if (Looper.myLooper() == Looper.getMainLooper()) {
+            applyCapture()
+        } else {
+            post { applyCapture() }
+        }
+    }
+
+    fun clearFastestCapture() {
+        val clear = {
+            fastestBitmap?.let { if (!it.isRecycled) it.recycle() }
+            fastestBitmap = null
+            fastestMeta = null
+            postInvalidateOnAnimation()
+        }
+        if (Looper.myLooper() == Looper.getMainLooper()) clear() else post { clear() }
+    }
+
     override fun onDraw(canvas: Canvas) {
         super.onDraw(canvas)
         if (width == 0 || height == 0) return
@@ -75,6 +122,7 @@ class HudOverlayView @JvmOverloads constructor(
 
         val now = System.nanoTime()
         tracks.forEach { drawTrack(canvas, it, now) }
+        drawFastestCapture(canvas)
         postInvalidateOnAnimation()
     }
 
@@ -106,9 +154,6 @@ class HudOverlayView @JvmOverloads constructor(
         val ageSeconds = ((now - track.lastSeenNanos) / 1_000_000_000f).coerceAtLeast(0f)
         val moving = track.relativeSpeed >= MIN_VISUAL_SPEED
 
-        // Track timestamps refer to the captured source frame, not inference completion. Allow
-        // enough look-ahead to cover the measured detector latency, while the tracker dead-zone
-        // prevents stationary boxes from drifting.
         val latencyBudget = (stats.inferenceMs / 1000f * LATENCY_COMPENSATION_MULTIPLIER)
             .coerceIn(MIN_EXTRAPOLATION_SECONDS, MAX_EXTRAPOLATION_SECONDS)
         val dt = if (moving) ageSeconds.coerceAtMost(latencyBudget) else 0f
@@ -159,6 +204,53 @@ class HudOverlayView @JvmOverloads constructor(
         }
     }
 
+    private fun drawFastestCapture(canvas: Canvas) {
+        val bitmap = fastestBitmap ?: return
+        val meta = fastestMeta ?: return
+        if (bitmap.isRecycled || bitmap.width <= 1 || bitmap.height <= 1) return
+
+        val panelWidth = (width * 0.36f).coerceAtMost(330f)
+        val imageHeight = panelWidth * 0.70f
+        val titleHeight = 52f
+        val margin = 12f
+        val left = margin
+        val right = left + panelWidth
+        val bottom = height - margin
+        val top = bottom - imageHeight - titleHeight
+
+        val panelRect = RectF(left, top, right, bottom)
+        canvas.drawRect(panelRect, capturePanelPaint)
+
+        smallPaint.color = green
+        smallPaint.textSize = 19f
+        val title = "FASTEST // ${meta.label.uppercase()} #${meta.id.toString().padStart(4, '0')}"
+        canvas.drawText(title, left + 8f, top + 21f, smallPaint)
+        smallPaint.color = dimGreen
+        canvas.drawText("CAPTURED  REL %.3f/s".format(meta.speed), left + 8f, top + 43f, smallPaint)
+
+        val dst = RectF(left + 4f, top + titleHeight, right - 4f, bottom - 4f)
+        val src = centerCropSource(bitmap, dst.width() / dst.height())
+        canvas.drawBitmap(bitmap, src, dst, imagePaint)
+
+        linePaint.color = green
+        linePaint.strokeWidth = 2f
+        canvas.drawRect(panelRect, linePaint)
+        canvas.drawRect(dst, linePaint)
+    }
+
+    private fun centerCropSource(bitmap: Bitmap, targetAspect: Float): Rect {
+        val sourceAspect = bitmap.width.toFloat() / bitmap.height.toFloat()
+        return if (sourceAspect > targetAspect) {
+            val cropWidth = (bitmap.height * targetAspect).toInt().coerceAtLeast(1)
+            val left = ((bitmap.width - cropWidth) / 2).coerceAtLeast(0)
+            Rect(left, 0, (left + cropWidth).coerceAtMost(bitmap.width), bitmap.height)
+        } else {
+            val cropHeight = (bitmap.width / targetAspect).toInt().coerceAtLeast(1)
+            val top = ((bitmap.height - cropHeight) / 2).coerceAtLeast(0)
+            Rect(0, top, bitmap.width, (top + cropHeight).coerceAtMost(bitmap.height))
+        }
+    }
+
     private fun drawCorners(canvas: Canvas, rect: RectF) {
         val corner = min(rect.width(), rect.height()) * 0.18f
         canvas.drawLine(rect.left, rect.top, rect.left + corner, rect.top, linePaint)
@@ -181,6 +273,13 @@ class HudOverlayView @JvmOverloads constructor(
         val a2 = angle - Math.PI * 0.82
         canvas.drawLine(x2, y2, (x2 + cos(a1) * size).toFloat(), (y2 + sin(a1) * size).toFloat(), linePaint)
         canvas.drawLine(x2, y2, (x2 + cos(a2) * size).toFloat(), (y2 + sin(a2) * size).toFloat(), linePaint)
+    }
+
+    override fun onDetachedFromWindow() {
+        fastestBitmap?.let { if (!it.isRecycled) it.recycle() }
+        fastestBitmap = null
+        fastestMeta = null
+        super.onDetachedFromWindow()
     }
 
     companion object {
