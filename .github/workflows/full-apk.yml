@@ -64,7 +64,7 @@ jobs:
           mkdir -p app/src/main/assets/models
           mv yolo26x.onnx app/src/main/assets/models/yolo26x.onnx
 
-      - name: Export Snapdragon HTP QNN external context bundles
+      - name: Export Snapdragon QNN and fast fallback models
         run: |
           python scripts/export_yolo26_qnn.py
           test -s qnn_s_bundle/model.onnx
@@ -72,13 +72,14 @@ jobs:
           test "$(find qnn_s_bundle -maxdepth 1 -name '*.bin' -type f -size +0c | wc -l)" -gt 0
           test "$(find qnn_n_bundle -maxdepth 1 -name '*.bin' -type f -size +0c | wc -l)" -gt 0
           test -s yolo26n.onnx
+          test -s yolo26s.onnx
 
           rm -rf app/src/main/assets/models/qnn_s app/src/main/assets/models/qnn_n
           mkdir -p app/src/main/assets/models/qnn_s app/src/main/assets/models/qnn_n
           cp -a qnn_s_bundle/. app/src/main/assets/models/qnn_s/
           cp -a qnn_n_bundle/. app/src/main/assets/models/qnn_n/
-
           cp yolo26n.onnx app/src/main/assets/models/yolo26n.onnx
+          cp yolo26s.onnx app/src/main/assets/models/yolo26s.onnx
 
           echo "QNN-S bundle:"
           ls -lh app/src/main/assets/models/qnn_s/
@@ -92,25 +93,25 @@ jobs:
 
       - name: Rename APK
         run: |
-          cp app/build/outputs/apk/debug/app-debug.apk REALITY-SCANNER-v0.1.9-DEMO-AI.apk
-          test -s REALITY-SCANNER-v0.1.9-DEMO-AI.apk
-          ls -lh REALITY-SCANNER-v0.1.9-DEMO-AI.apk
+          cp app/build/outputs/apk/debug/app-debug.apk REALITY-SCANNER-v0.2.0-TRACK-NPU-GPU.apk
+          test -s REALITY-SCANNER-v0.2.0-TRACK-NPU-GPU.apk
+          ls -lh REALITY-SCANNER-v0.2.0-TRACK-NPU-GPU.apk
 
       - uses: actions/upload-artifact@v4
         with:
-          name: reality-scanner-v0.1.9
-          path: REALITY-SCANNER-v0.1.9-DEMO-AI.apk
+          name: reality-scanner-v0.2.0
+          path: REALITY-SCANNER-v0.2.0-TRACK-NPU-GPU.apk
           retention-days: 30
 
       - name: Publish GitHub Release APK
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
-          NOTES="Runs live YOLO inference on YouTube demo frames. A PixelCopy latest-frame pump captures the square demo area and submits frames to the same detector used by CameraX without queueing stale frames. CAMERA/DEMO source generations prevent in-flight camera results from repopulating the HUD after switching modes. Keeps the v0.1.8 YouTube playback and bbox drift fixes."
-          if gh release view v0.1.9 >/dev/null 2>&1; then
-            gh release upload v0.1.9 REALITY-SCANNER-v0.1.9-DEMO-AI.apk --clobber
+          NOTES="Improves live/demo tracking with class-tolerant greedy association, alpha-beta motion filtering, label voting, false-positive confirmation, shorter stale-track lifetime, and detector-latency HUD compensation. Normalizes QNN EPContext source metadata for current ORT QNN compatibility and adds a QNN GPU float-model path before CPU fallback."
+          if gh release view v0.2.0 >/dev/null 2>&1; then
+            gh release upload v0.2.0 REALITY-SCANNER-v0.2.0-TRACK-NPU-GPU.apk --clobber
           else
-            gh release create v0.1.9 REALITY-SCANNER-v0.1.9-DEMO-AI.apk \
-              --title "REALITY SCANNER v0.1.9" \
+            gh release create v0.2.0 REALITY-SCANNER-v0.2.0-TRACK-NPU-GPU.apk \
+              --title "REALITY SCANNER v0.2.0" \
               --notes "$NOTES"
           fi
