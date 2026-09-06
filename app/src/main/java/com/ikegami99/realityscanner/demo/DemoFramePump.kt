@@ -44,7 +44,7 @@ class DemoFramePump(
         handler.post(loop)
         logger.info(
             "DEMO",
-            "frame inference started // PixelCopy latest-frame pump // interval=${CAPTURE_INTERVAL_MS}ms"
+            "frame inference started // PixelCopy FAST20 pump // interval=${CAPTURE_INTERVAL_MS}ms"
         )
     }
 
@@ -113,8 +113,8 @@ class DemoFramePump(
     }
 
     companion object {
-        // Faster than the current ~175 ms CPU fallback, while submitDemoFrame drops captures when
-        // inference is still busy. A future HTP path can consume more of these without code changes.
-        private const val CAPTURE_INTERVAL_MS = 100L
+        // 40 ms targets a 25 Hz capture opportunity. submitDemoFrame still drops frames while
+        // inference is busy, so the real AI rate naturally settles near the detector throughput.
+        private const val CAPTURE_INTERVAL_MS = 40L
     }
 }
