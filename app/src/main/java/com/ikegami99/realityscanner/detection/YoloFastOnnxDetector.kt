@@ -19,7 +19,10 @@ class YoloFastOnnxDetector(
     private val context: Context,
     private val logger: AppLogger,
     private val assetName: String = "yolo26n.onnx",
-    private val displayName: String = "YOLO26N"
+    private val displayName: String = "YOLO26N",
+    private val tryQnnGpu: Boolean = true,
+    private val allowCpuFallback: Boolean = true,
+    private val confidenceThreshold: Float = 0.40f
 ) : Detector {
     private val environment = OrtEnvironment.getEnvironment()
     private var session: OrtSession? = null
@@ -94,6 +97,29 @@ class YoloFastOnnxDetector(
         val cores = Runtime.getRuntime().availableProcessors()
         val threads = (cores - 2).coerceIn(2, 8)
 
+        if (tryQnnGpu) {
+            val gpuOptions = OrtSession.SessionOptions()
+            try {
+                // QNN GPU accepts float models without the HTP QDQ requirement. Small uses this
+                // path only; nano can still fall back to CPU if the device/driver rejects it.
+                gpuOptions.addConfigEntry("session.disable_cpu_ep_fallback", "0")
+                gpuOptions.addQnn(
+                    mapOf(
+                        "backend_path" to "libQnnGpu.so"
+                    )
+                )
+                val created = environment.createSession(model.absolutePath, gpuOptions)
+                installSession(created, gpuOptions, "QNN-GPU", threads)
+                return
+            } catch (t: Throwable) {
+                runCatching { gpuOptions.close() }
+                logger.warn(
+                    "GPU",
+                    "QNN GPU unavailable for $displayName: ${t.javaClass.simpleName}: ${t.message}"
+                )
+            }
+        }
+
         val xnnOptions = OrtSession.SessionOptions()
         try {
             xnnOptions.addXnnpack(mapOf("intra_op_num_threads" to threads.toString()))
@@ -105,8 +131,11 @@ class YoloFastOnnxDetector(
             logger.warn("FAST", "XNNPACK unavailable for $displayName: ${t.javaClass.simpleName}: ${t.message}")
         }
 
-        // The QNN Android package may not include XNNPACK. Still keep the small 640px nano model
-        // as the compatibility path instead of escalating to YOLO26x/960 on generic CPU.
+        if (!allowCpuFallback) {
+            logger.warn("FAST", "$displayName hardware path unavailable // skipping CPU fallback")
+            return
+        }
+
         val cpuOptions = OrtSession.SessionOptions()
         try {
             cpuOptions.setIntraOpNumThreads(threads)
@@ -151,8 +180,9 @@ class YoloFastOnnxDetector(
         activeBackend = backend
         logger.info(
             "FAST",
-            "$backendName loaded input=${inputWidth}x$inputHeight " +
-                "layout=${if (inputNhwc) "NHWC" else "NCHW"} shape=${inputShape.toList()} threads=$threads"
+            "$displayName loaded input=${inputWidth}x$inputHeight " +
+                "layout=${if (inputNhwc) "NHWC" else "NCHW"} shape=${inputShape.toList()} " +
+                "backend=$backend threads=$threads conf=${"%.2f".format(confidenceThreshold)}"
         )
     }
 
@@ -180,7 +210,7 @@ class YoloFastOnnxDetector(
             if (row.size < 6) return@forEach
             if (row.size == 6) {
                 val score = row[4]
-                if (score < CONFIDENCE_THRESHOLD) return@forEach
+                if (score < confidenceThreshold) return@forEach
                 candidates += Detection(
                     labelFor(row[5].toInt()), score,
                     normalizeBox(row[0], row[1], row[2], row[3])
@@ -194,7 +224,7 @@ class YoloFastOnnxDetector(
                         bestClass = i - 4
                     }
                 }
-                if (bestScore < CONFIDENCE_THRESHOLD) return@forEach
+                if (bestScore < confidenceThreshold) return@forEach
                 val cx = row[0]
                 val cy = row[1]
                 val w = row[2]
@@ -287,7 +317,6 @@ class YoloFastOnnxDetector(
     }
 
     companion object {
-        private const val CONFIDENCE_THRESHOLD = 0.35f
         private val COCO_LABELS = listOf(
             "person", "bicycle", "car", "motorcycle", "airplane", "bus", "train", "truck",
             "boat", "traffic light", "fire hydrant", "stop sign", "parking meter", "bench",
