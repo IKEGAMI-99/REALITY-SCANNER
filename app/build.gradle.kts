@@ -10,8 +10,8 @@ android {
         applicationId = "com.ikegami99.realityscanner"
         minSdk = 28
         targetSdk = 37
-        versionCode = 11
-        versionName = "0.2.0"
+        versionCode = 12
+        versionName = "0.2.1"
 
         buildConfigField("String", "GITHUB_REPO", "\"IKEGAMI-99/REALITY-SCANNER\"")
     }
